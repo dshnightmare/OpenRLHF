@@ -153,7 +153,9 @@ if __name__ == "__main__":
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=list, default=None)
-    parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
+    # parser.add_argument("--input_template", type=str, default="Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{}\n\n### Response: ")
+    parser.add_argument("--input_template", type=str, default="Question:\n{}\nAnswer reasoning:\n")
+    
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
 
     parser.add_argument("--bos_token", type=str, default=None)

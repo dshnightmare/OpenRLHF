@@ -3,7 +3,7 @@ from tqdm import tqdm
 from .utils import exist_and_not_none
 
 
-def preprocess_data(data, input_template=None, input_key=None) -> str:
+def preprocess_data(data, input_template=None, input_key=None, output_key=None) -> str:
     # custom dataset
     if input_key:
         prompt = data[input_key]
@@ -51,8 +51,13 @@ def preprocess_data(data, input_template=None, input_key=None) -> str:
     # input template
     if input_template:
         prompt = input_template.format(prompt)
-    return prompt
 
+    if output_key:
+        response = data[output_key]
+        return prompt, response
+    else:
+        return prompt
+    
 
 class PromptDataset(Dataset):
     """
@@ -88,3 +93,42 @@ class PromptDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.prompts[idx]
+
+
+class PromptWithResponseDataset(Dataset):
+    """
+    Dataset for PPO model, also return response for reference
+
+    Args:
+        dataset: dataset for PPO model
+        tokenizer: tokenizer for PPO model
+        max_length: max length of input
+    """
+
+    def __init__(
+        self,
+        dataset,
+        tokenizer,
+        strategy,
+        input_template="Human: {}\nAssistant: ",
+    ) -> None:
+        super().__init__()
+        self.strategy = strategy
+        self.tokenizer = tokenizer
+        self.input_template = input_template
+        input_key = getattr(self.strategy.args, "input_key", None)
+        output_key = getattr(self.strategy.args, "output_key", None)
+
+        self.prompts = []
+        self.response = []
+        for data in tqdm(dataset, disable=not self.strategy.is_rank_0()):
+            prompt, response = preprocess_data(data, input_template, input_key, output_key)
+            self.prompts.append(prompt)
+            self.response.append(response)
+
+    def __len__(self):
+        length = len(self.prompts)
+        return length
+
+    def __getitem__(self, idx):
+        return self.prompts[idx], self.response[idx]

@@ -6,12 +6,15 @@ from copy import deepcopy
 from datetime import datetime
 
 import torch
-from transformers.trainer import get_scheduler
+from torch.utils.data import DataLoader
+# from transformers.trainer import get_scheduler
 
-from openrlhf.datasets import PromptDataset, SFTDataset
+from openrlhf.datasets import PromptWithResponseDataset, SFTDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
+
+from tal.utils import reward_gsm8k, get_scheduler
 
 
 def train(args):
@@ -36,7 +39,7 @@ def train(args):
         actor = actor.to(torch.cuda.current_device())
 
     critic = get_llm_for_sequence_regression(
-        args.reward_pretrain,
+        args.reward_pretrain or args.pretrain,
         "critic",
         normalize_reward=args.normalize_reward,
         use_flash_attention_2=args.flash_attn,
@@ -47,20 +50,24 @@ def train(args):
         target_modules=args.target_modules,
         ds_config=strategy.get_ds_train_config(is_actor=False),
     )
-    reward_model = get_llm_for_sequence_regression(
-        args.reward_pretrain,
-        "reward",
-        normalize_reward=args.normalize_reward,
-        use_flash_attention_2=args.flash_attn,
-        bf16=args.bf16,
-        load_in_4bit=args.load_in_4bit,
-        ds_config=strategy.get_ds_train_config(is_actor=False),
-    )
+    if args.reward_pretrain:
+        reward_model = get_llm_for_sequence_regression(
+            args.reward_pretrain,
+            "reward",
+            normalize_reward=args.normalize_reward,
+            use_flash_attention_2=args.flash_attn,
+            bf16=args.bf16,
+            load_in_4bit=args.load_in_4bit,
+            ds_config=strategy.get_ds_train_config(is_actor=False),
+        )
+    else:
+        reward_model = None
 
     # configure tokenizer
     tokenizer = get_tokenizer(args.pretrain, actor.model, "left", strategy)
-    get_tokenizer(args.reward_pretrain, critic, "left", strategy)
-    get_tokenizer(args.reward_pretrain, reward_model, "left", strategy)
+    get_tokenizer(args.reward_pretrain or args.pretrain, critic, "left", strategy)
+    if args.reward_pretrain:
+        get_tokenizer(args.reward_pretrain, reward_model, "left", strategy)
 
     strategy.print(actor)
     strategy.print(critic)
@@ -76,7 +83,8 @@ def train(args):
     get_tokenizer(args.pretrain, initial_model.model, "left", strategy)
 
     strategy.print("reward normalization status: {}".format(args.normalize_reward))
-    strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
+    if args.reward_pretrain:
+        strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
 
     if args.enable_ema:
         ema_model = deepcopy(actor)
@@ -101,8 +109,25 @@ def train(args):
         return_eval=False,
     )
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    prompts_dataset = PromptDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+    prompts_dataset = PromptWithResponseDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
     prompts_dataloader = strategy.setup_dataloader(prompts_dataset, args.micro_rollout_batch_size, True, True)
+    strategy.print("train: ", len(prompts_data))
+
+    if args.eval_data:
+        eval_data = blending_datasets(
+            args.eval_data,
+            args.eval_data_probs,
+            strategy,
+            args.seed,
+            max_count=args.max_samples,
+            return_eval=False,
+        )
+        eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
+        eval_dataset = PromptWithResponseDataset(eval_data, tokenizer, strategy, input_template=args.input_template)
+        eval_dataloader = strategy.setup_dataloader(eval_dataset, args.micro_rollout_batch_size, True, True)
+        strategy.print("eval: ", len(eval_data))
+    else:
+        eval_dataloader = None
 
     if args.pretrain_data:
         pretrain_data = blending_datasets(
@@ -146,7 +171,7 @@ def train(args):
     )
 
     critic_scheduler = get_scheduler(
-        "cosine",
+        "constant_with_warmup",
         critic_optim,
         num_warmup_steps=math.ceil(max_steps * 0.03),
         num_training_steps=max_steps,
@@ -165,12 +190,12 @@ def train(args):
     (
         (actor, actor_optim, actor_scheduler),
         (critic, critic_optim, critic_scheduler),
-        reward_model,
+        # reward_model,
         initial_model,
     ) = strategy.prepare(
         (actor, actor_optim, actor_scheduler),
         (critic, critic_optim, critic_scheduler),
-        reward_model,
+        # reward_model,
         initial_model,
         is_rlhf=True,
     )
@@ -213,6 +238,7 @@ def train(args):
         ema_beta=0.992,
         ptx_coef=args.ptx_coef,
         max_norm=args.max_norm,
+        reward_fn=reward_gsm8k,
         # fro GPT generation
         do_sample=True,
         max_new_tokens=args.generate_max_len,
@@ -226,6 +252,7 @@ def train(args):
     trainer.fit(
         prompts_dataloader,
         pretrain_dataloader,
+        eval_dataloader,
         args,
     )
 
@@ -242,6 +269,13 @@ if __name__ == "__main__":
     parser.add_argument("--prompt_data", type=str, default=None)
     parser.add_argument(
         "--prompt_data_probs",
+        type=str,
+        default="1.0",
+        help="sampling probs for datasets",
+    )
+    parser.add_argument("--eval_data", type=str, default=None)
+    parser.add_argument(
+        "--eval_data_probs",
         type=str,
         default="1.0",
         help="sampling probs for datasets",
@@ -291,6 +325,7 @@ if __name__ == "__main__":
     parser.add_argument("--bf16", action="store_true", default=False)
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
+    parser.add_argument("--critic_warmup_step", type=int, default=100)
     parser.add_argument("--kl_target", type=float, default=None)
     parser.add_argument("--init_kl_coef", type=float, default=0.02)
     ## Make EMA as an optional feature
@@ -306,7 +341,8 @@ if __name__ == "__main__":
     parser.add_argument("--lora_rank", type=int, default=0)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--target_modules", type=list, default=None)
-    parser.add_argument("--input_template", type=str, default="Human: {}\nAssistant: ")
+    # parser.add_argument("--input_template", type=str, default="Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{}\n\n### Response: ")
+    parser.add_argument("--input_template", type=str, default="Question:\n{}\nAnswer reasoning:\n")
     parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
 
     parser.add_argument("--bos_token", type=str, default=None)
@@ -316,6 +352,7 @@ if __name__ == "__main__":
 
     # custom dataset key name
     parser.add_argument("--input_key", type=str, default=None)
+    parser.add_argument("--output_key", type=str, default=None)
 
     # wandb pamameters
     parser.add_argument("--use_wandb", type=str, default=None)

@@ -109,11 +109,12 @@ class NaiveExperienceMaker(ABC):
         return {k: v.to(device) for k, v in batch.items()}
 
     @torch.no_grad()
-    def make_experience(self, prompts: Union[str, List[str]], **generate_kwargs) -> Experience:
+    def make_experience(self, prompts: Union[str, List[str]], responses: Union[str, List[str]]=None, **generate_kwargs) -> Experience:
         self.actor.eval()
         self.critic.eval()
         self.initial_model.eval()
-        self.reward_model.eval()
+        if self.reward_model:
+            self.reward_model.eval()
 
         # generate seq
         inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
@@ -130,7 +131,11 @@ class NaiveExperienceMaker(ABC):
         value = self.critic(sequences, action_mask, attention_mask)
 
         # rewards
-        r = self.reward_model(sequences, attention_mask)
+        if self.reward_model:
+            preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
+            r = torch.tensor([self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)], dtype=torch.float, device='cuda')
+        else:
+            r = self.reward_model(sequences, attention_mask)
 
         reward, kl = compute_reward(
             r,
