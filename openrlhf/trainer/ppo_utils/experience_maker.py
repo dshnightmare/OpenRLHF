@@ -290,6 +290,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         info = {
             "kl": masked_mean(kl, action_mask, dim=-1),
+            "ppl": masked_mean(action_log_probs, action_mask, dim=-1),
             "reward": r,
             "return": reward.sum(dim=-1),
             "response_length": action_mask.float().sum(dim=-1),

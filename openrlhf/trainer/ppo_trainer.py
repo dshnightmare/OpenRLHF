@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import ray
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
@@ -268,6 +269,7 @@ class PPOTrainer(ABC):
         action_log_probs, output = self.actor(
             experience.sequences, num_actions, attention_mask=experience.attention_mask, return_output=True
         )
+        action_probs = F.softmax(output["logits"][:, :-1, :], dim=-1)[:, -num_actions:, :]
 
         # loss function
         actor_loss = self.actor_loss_fn(
@@ -310,17 +312,21 @@ class PPOTrainer(ABC):
 
         if not warmup:
             self.strategy.optimizer_step(self.actor_optim, self.actor, self.actor_scheduler, name="actor")
-        if self.ema_model:
-            self.strategy.moving_average(self.actor, self.ema_model, self.ema_beta, "cpu")
+            if self.ema_model:
+                self.strategy.moving_average(self.actor, self.ema_model, self.ema_beta, "cpu")
 
         # status
+        entropy = masked_mean(-torch.sum(action_probs * torch.log(action_probs + 1e-9), dim=-1), experience.action_mask)
         status = {
-            "policy_loss": actor_loss.item(),
+            "actor/pg_loss": actor_loss.item(),
+            "actor/lr": self.actor_optim.param_groups[0]['lr'],
+            "actor/entropy": entropy.item(),
+            "actor/advantages": masked_mean(experience.advantages, experience.action_mask).item(),
         }
         if self.pretrain_dataloader is not None:
             status["ptx_loss"] = ptx_loss.item()
         for k, v in experience.info.items():
-            if k == "kl":
+            if k in ["kl", "ppl"]:
                 status[k] = (
                     (v * experience.info["response_length"]).sum() / experience.info["response_length"].sum()
                 ).item()
@@ -356,8 +362,9 @@ class PPOTrainer(ABC):
 
         # status
         status = {
-            "critic_loss": critic_loss.item(),
-            "values": masked_mean(values, experience.action_mask).item(),
+            "critic/v_loss": critic_loss.item(),
+            "critic/lr": self.critic_optim.param_groups[0]['lr'],
+            "critic/values": masked_mean(values, experience.action_mask).item(),
         }
         return status
     
