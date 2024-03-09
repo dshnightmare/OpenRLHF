@@ -59,7 +59,8 @@ def split_experience_batch(experience: Experience) -> List[BufferItem]:
     for i in range(batch_size):
         batch_kwargs[i]["info"] = {}
     for k, v in experience.info.items():
-        vals = torch.unbind(v)
+        if isinstance(v, torch.Tensor):
+            vals = torch.unbind(v)
         assert batch_size == len(vals)
         for i, vv in enumerate(vals):
             batch_kwargs[i]["info"][k] = vv.item()

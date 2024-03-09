@@ -1,10 +1,17 @@
 import re
 import math
+from enum import Enum
 from functools import partial
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 
 INVALID_ANS = "[invalid]"
+
+
+class gsm8kResult(Enum):
+    CORRECT = 0
+    INCORRECT = 1
+    BADFORMAT = 2
 
 compare_answer_fn_mapper = {
     'gsm8k': lambda pred_ans, gold_ans: abs(pred_ans - gold_ans) <= 1e-4,
@@ -41,11 +48,11 @@ def reward_gsm8k(pred_line, gold_line):
     gold_ans = extract_answer(gold_line, gold_ans_re_mapper['gsm8k'])
     assert gold_ans != INVALID_ANS, gold_ans
     if pred_ans == INVALID_ANS:
-        return -0.1
+        return -0.1, gsm8kResult.BADFORMAT
     elif compare_answer_fn_mapper['gsm8k'](float(pred_ans), float(gold_ans)):
-        return 1.
+        return 1., gsm8kResult.CORRECT
     else:
-        return 0.
+        return 0., gsm8kResult.INCORRECT
     
 
 def get_scheduler(

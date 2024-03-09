@@ -132,10 +132,11 @@ class NaiveExperienceMaker(ABC):
 
         # rewards
         if self.reward_model:
-            preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
-            r = torch.tensor([self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)], dtype=torch.float, device='cuda')
-        else:
             r = self.reward_model(sequences, attention_mask)
+        else:
+            preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
+            r, status = zip(*[self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)])
+            r = torch.tensor(r, dtype=torch.float, device='cuda')
 
         reward, kl = compute_reward(
             r,
@@ -155,6 +156,7 @@ class NaiveExperienceMaker(ABC):
         info = {
             "kl": masked_mean(kl, action_mask, dim=-1),
             "reward": r,
+            "reward_status": status,
             "return": reward.sum(dim=-1),
             "response_length": action_mask.float().sum(dim=-1),
             "total_length": attention_mask.float().sum(dim=-1),

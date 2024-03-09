@@ -176,21 +176,30 @@ class PPOTrainer(ABC):
             )
 
             for rand_prompts in self.prompts_dataloader:
-                if isinstance(rand_prompts, tuple):
+                if isinstance(rand_prompts[0], str):
+                    experience = self.experience_maker.make_experience(rand_prompts, **self.generate_kwargs)
+                else:
                     rand_prompts, responses = rand_prompts
                     experience = self.experience_maker.make_experience(rand_prompts, responses, **self.generate_kwargs)
-                else:
-                    experience = self.experience_maker.make_experience(rand_prompts, **self.generate_kwargs)
-                # print prompt/answer in each update step
-                if global_step % update_timesteps == 0:
-                    output = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=True)
-                    self.strategy.print(output[0])
+                   
                 self.replay_buffer.append(experience)
 
                 if global_step % update_timesteps == 0:
+                    # print prompt/answer in each update step
+                    status ={}
+                    total_num = experience.sequences.size(0)
+                    for attr in type(experience.info['reward_status'][0]).__members__:
+                        select = [s.name == attr for s in experience.info['reward_status']]
+                        output = self.tokenizer.batch_decode(experience.sequences[select], skip_special_tokens=True)
+                        if output:
+                            self.strategy.print(attr)
+                            self.strategy.print(output[0])
+                        status[attr] = len(output) / total_num
+                    status = self.strategy.all_reduce(status)
+
                     torch.cuda.empty_cache()
                     self.replay_buffer.normalize("advantages", self.strategy)
-                    status = self.ppo_train(global_step <= args.critic_warmup_step)
+                    status.update(self.ppo_train(global_step <= args.critic_warmup_step))
                     self.replay_buffer.clear()
                     torch.cuda.empty_cache()
                     self.kl_ctl.update(status["kl"], args.rollout_batch_size)
@@ -232,7 +241,7 @@ class PPOTrainer(ABC):
 
                 status_list.append(status)
                 short_status = {
-                    "pg": status["policy_loss"],
+                    "pg": status["actor/pg_loss"],
                     "rm": status["reward"],
                     "ret": status["return"],
                     "glen": status["response_length"],
@@ -240,11 +249,11 @@ class PPOTrainer(ABC):
                     "kl": status["kl"],
                 }
                 if "critic_loss" in status:
-                    short_status["cri"] = status["critic_loss"]
-                    short_status["vals"] = status["values"]
+                    short_status["cri"] = status["critic/v_loss"]
+                    short_status["vals"] = status["critic/values"]
 
                 if "ptx_loss" in status:
-                    short_status["ptx"] = status["ptx_loss"]
+                    short_status["ptx"] = status["actor/ptx_loss"]
                 pbar.set_postfix(short_status)
 
         if status_list:
@@ -324,7 +333,7 @@ class PPOTrainer(ABC):
             "actor/advantages": masked_mean(experience.advantages, experience.action_mask).item(),
         }
         if self.pretrain_dataloader is not None:
-            status["ptx_loss"] = ptx_loss.item()
+            status["actor/ptx_loss"] = ptx_loss.item()
         for k, v in experience.info.items():
             if k in ["kl", "ppl"]:
                 status[k] = (
