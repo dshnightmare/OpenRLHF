@@ -415,6 +415,6 @@ class PPOTrainer(ABC):
             self.strategy.save_ckpt(
                 self.actor.model, os.path.join(args.ckpt_path, "_actor"), tag, args.max_ckpt_num, args.max_ckpt_mem
             )
-            self.strategy.save_ckpt(
-                self.critic, os.path.join(args.ckpt_path, "_critic"), tag, args.max_ckpt_num, args.max_ckpt_mem
-            )
+            # self.strategy.save_ckpt(
+            #     self.critic, os.path.join(args.ckpt_path, "_critic"), tag, args.max_ckpt_num, args.max_ckpt_mem
+            # )
