@@ -160,7 +160,7 @@ def train(args):
         pretrain_dataloader = None
 
     # configure scheduler
-    num_update_steps_per_episodes = len(prompts_dataloader) * args.max_epochs // strategy.accumulated_gradient
+    num_update_steps_per_episodes = len(prompts_data) * args.max_epochs // args.train_batch_size
     max_steps = math.ceil(args.num_episodes * num_update_steps_per_episodes)
 
     actor_scheduler = get_scheduler(
@@ -325,7 +325,7 @@ if __name__ == "__main__":
     parser.add_argument("--bf16", action="store_true", default=False)
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
-    parser.add_argument("--critic_warmup_step", type=int, default=100)
+    parser.add_argument("--critic_warmup_step", type=int, default=30)
     parser.add_argument("--kl_target", type=float, default=None)
     parser.add_argument("--init_kl_coef", type=float, default=0.02)
     ## Make EMA as an optional feature

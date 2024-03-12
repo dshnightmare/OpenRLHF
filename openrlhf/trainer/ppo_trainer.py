@@ -199,7 +199,7 @@ class PPOTrainer(ABC):
 
                     torch.cuda.empty_cache()
                     self.replay_buffer.normalize("advantages", self.strategy)
-                    status.update(self.ppo_train(global_step <= args.critic_warmup_step))
+                    status.update(self.ppo_train(global_step // update_timesteps <= args.critic_warmup_step))
                     self.replay_buffer.clear()
                     torch.cuda.empty_cache()
                     self.kl_ctl.update(status["kl"], args.rollout_batch_size)
@@ -374,6 +374,7 @@ class PPOTrainer(ABC):
             "critic/v_loss": critic_loss.item(),
             "critic/lr": self.critic_optim.param_groups[0]['lr'],
             "critic/values": masked_mean(values, experience.action_mask).item(),
+            "critic/v_target": masked_mean(experience.returns, experience.action_mask).item(),
         }
         return status
     
