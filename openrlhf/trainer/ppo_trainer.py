@@ -234,10 +234,12 @@ class PPOTrainer(ABC):
                 status = self.training_step(experience, warmup=warmup)
 
                 # for DP
-                # weighted mean for kl
+                # weighted mean for kl, ppl
                 status["kl"] *= status["response_length"]
+                status["ppl"] *= status["response_length"]
                 status = self.strategy.all_reduce(status)
                 status["kl"] /= status["response_length"]
+                status["ppl"] /= status["response_length"]
 
                 status_list.append(status)
                 short_status = {
@@ -247,6 +249,7 @@ class PPOTrainer(ABC):
                     "glen": status["response_length"],
                     "tlen": status["total_length"],
                     "kl": status["kl"],
+                    "ppl": status["ppl"],
                 }
                 if "critic_loss" in status:
                     short_status["cri"] = status["critic/v_loss"]
