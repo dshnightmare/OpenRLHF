@@ -86,8 +86,8 @@ def train(args):
     if args.reward_pretrain:
         strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
 
-    if args.enable_ema:
-        ema_model = deepcopy(actor)
+    if args.enable_ema and strategy.is_rank_0():
+        ema_model = deepcopy(actor.to("cpu"))
     else:
         ema_model = None
 
@@ -200,10 +200,10 @@ def train(args):
         is_rlhf=True,
     )
 
-    if ema_model:
-        ema_model._offload = True
-        ema_model = strategy.prepare(ema_model, is_rlhf=True)
-        del ema_model._offload
+    # if ema_model:
+    #     ema_model._offload = True
+    #     ema_model = strategy.prepare(ema_model, is_rlhf=True)
+    #     del ema_model._offload
 
     # load checkpoint
     if args.load_checkpoint:
@@ -257,11 +257,12 @@ def train(args):
     )
 
     # save model checkpoint after fitting on only rank0
-    strategy.save_model(
-        ema_model if args.enable_ema else actor,
-        tokenizer,
-        args.save_path,
-    )
+    if strategy.is_rank_0():
+        strategy.save_model(
+            ema_model if args.enable_ema else actor,
+            tokenizer,
+            args.save_path,
+        )
 
 
 if __name__ == "__main__":
