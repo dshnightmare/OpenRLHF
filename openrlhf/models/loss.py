@@ -50,10 +50,10 @@ class PolicyLoss(nn.Module):
         surr2 = ratio.clamp(1 - self.clip_eps, 1 + self.clip_eps) * advantages
         info['ppo_clip1_count'] = masked_mean(surr1 > surr2, action_mask, dim=-1).detach()
         loss = torch.min(surr1, surr2)
-        if (self.dual_clip):
+        if self.dual_clip:
             surr3 = self.clip_c * advantages
-            info['ppo_clip2_count'] = masked_mean(loss < surr3, action_mask, dim=-1).detach()
-            loss = torch.max(loss, surr3)
+            info['ppo_clip2_count'] = masked_mean((advantages < 0) * (loss < surr3), action_mask, dim=-1).detach()
+            loss = torch.where(advantages < 0, torch.max(loss, surr3), loss)
         loss = -masked_mean(loss, action_mask, dim=-1).mean()
         
         if return_info:
