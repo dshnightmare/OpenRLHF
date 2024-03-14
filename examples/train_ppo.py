@@ -161,7 +161,7 @@ def train(args):
         pretrain_dataloader = None
 
     # configure scheduler
-    num_update_steps_per_episodes = len(prompts_data) * args.max_epochs // args.train_batch_size
+    num_update_steps_per_episodes = len(prompts_data) * args.max_epochs * args.rollout_repeat // args.train_batch_size
     max_steps = math.ceil(args.num_episodes * num_update_steps_per_episodes)
 
     actor_scheduler = get_scheduler(
