@@ -43,6 +43,7 @@ def train(args):
         "critic",
         normalize_reward=args.normalize_reward,
         use_flash_attention_2=args.flash_attn,
+        trlx_value_head=args.trlx_value_head,
         bf16=args.bf16,
         load_in_4bit=args.load_in_4bit,
         lora_rank=args.lora_rank,
@@ -231,6 +232,8 @@ def train(args):
         prompt_max_len=args.prompt_max_len,
         value_clip=args.value_clip,
         eps_clip=args.eps_clip,
+        c_clip=args.c_clip,
+        dual_clip=args.dual_clip,
         gamma=args.gamma,
         lambd=args.lambd,
         init_kl_coef=args.init_kl_coef,
@@ -309,6 +312,8 @@ if __name__ == "__main__":
     parser.add_argument("--l2", type=float, default=0.0)
     parser.add_argument("--ptx_coef", type=float, default=0.05)
     parser.add_argument("--eps_clip", type=float, default=0.2)
+    parser.add_argument("--c_clip", type=float, default=3.0)
+    parser.add_argument("--dual_clip", action="store_true", default=False)
     parser.add_argument("--value_clip", type=float, default=0.2)
     parser.add_argument("--lambd", type=float, default=0.95)
     parser.add_argument("--gamma", type=float, default=1)
@@ -329,6 +334,7 @@ if __name__ == "__main__":
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)
     parser.add_argument("--critic_scheduler", type=str, default="constant_with_warmup")
     parser.add_argument("--critic_warmup_step", type=int, default=30)
+    parser.add_argument("--trlx_value_head", action="store_true", default=False)
     parser.add_argument("--kl_target", type=float, default=None)
     parser.add_argument("--init_kl_coef", type=float, default=0.02)
     ## Make EMA as an optional feature

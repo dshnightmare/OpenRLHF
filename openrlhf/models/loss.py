@@ -30,9 +30,11 @@ class PolicyLoss(nn.Module):
     Policy Loss for PPO
     """
 
-    def __init__(self, clip_eps: float = 0.2) -> None:
+    def __init__(self, clip_eps: float = 0.2, clip_c: float = 3.0, dual_clip: bool = False) -> None:
         super().__init__()
         self.clip_eps = clip_eps
+        self.clip_c = clip_c
+        self.dual_clip = dual_clip
 
     def forward(
         self,
@@ -40,13 +42,24 @@ class PolicyLoss(nn.Module):
         old_log_probs: torch.Tensor,
         advantages: torch.Tensor,
         action_mask: Optional[torch.Tensor] = None,
+        return_info: bool = False,
     ) -> torch.Tensor:
+        info = {}
         ratio = (log_probs - old_log_probs).exp()
         surr1 = ratio * advantages
         surr2 = ratio.clamp(1 - self.clip_eps, 1 + self.clip_eps) * advantages
-        loss = -torch.min(surr1, surr2)
-        loss = masked_mean(loss, action_mask, dim=-1).mean()
-        return loss
+        info['ppo_clip1_count'] = masked_mean(surr1 > surr2, action_mask, dim=-1).detach()
+        loss = torch.min(surr1, surr2)
+        if (self.dual_clip):
+            surr3 = self.clip_c * advantages
+            info['ppo_clip2_count'] = masked_mean(loss < surr3, action_mask, dim=-1).detach()
+            loss = torch.max(loss, surr3)
+        loss = -masked_mean(loss, action_mask, dim=-1).mean()
+        
+        if return_info:
+            return loss, info
+        else:
+            return loss
 
 
 class ValueLoss(nn.Module):

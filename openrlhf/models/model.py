@@ -17,6 +17,14 @@ from .utils import find_all_linear_names
 logger = init_logger(__name__)
 
 
+def make_value_head(n_embd: int, out: int, dtype: type = torch.float32) -> nn.Sequential:
+    """Returns a generic sequential MLP head."""
+    return nn.Sequential(
+        nn.Linear(n_embd, n_embd * 2, dtype=dtype),
+        nn.ReLU(),
+        nn.Linear(n_embd * 2, out, dtype=dtype),
+    )
+
 # Construct transformer with a value head for sequence classification.
 # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L1310
 def get_llm_for_sequence_regression(
@@ -30,6 +38,7 @@ def get_llm_for_sequence_regression(
     target_modules=None,
     normalize_reward=False,
     use_flash_attention_2=False,
+    trlx_value_head=False,
     ds_config: dict = None,
     init_value_head: bool = False,
     **kwargs,
@@ -55,6 +64,7 @@ def get_llm_for_sequence_regression(
     config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
     config.normalize_reward = normalize_reward
     config._attn_implementation = "flash_attention_2" if use_flash_attention_2 else "eager"
+    config.trlx_value_head = trlx_value_head
 
     try:
         base_class = AutoModel._model_mapping[type(config)]
@@ -170,7 +180,10 @@ def _get_reward_model(base_pretrained_model, base_llm_model):
             super().__init__(config)
             setattr(self, self.base_model_prefix, base_llm_model(config))
 
-            self.value_head = nn.Linear(config.hidden_size, 1, bias=False)
+            if config.trlx_value_head:
+                self.value_head = make_value_head(config.hidden_size, 1)
+            else:
+                self.value_head = nn.Linear(config.hidden_size, 1, bias=False)
 
             # mean std
             self.normalize_reward = config.normalize_reward
@@ -230,7 +243,10 @@ def _get_critic_model(base_pretrained_model, base_llm_model):
             super().__init__(config)
             setattr(self, self.base_model_prefix, base_llm_model(config))
 
-            self.value_head = nn.Linear(config.hidden_size, 1, bias=False)
+            if config.trlx_value_head:
+                self.value_head = make_value_head(config.hidden_size, 1)
+            else:
+                self.value_head = nn.Linear(config.hidden_size, 1, bias=False)
 
             # mean std
             self.normalize_reward = config.normalize_reward

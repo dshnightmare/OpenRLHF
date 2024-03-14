@@ -35,6 +35,8 @@ class PPOTrainer(ABC):
         buffer_limit (int, defaults to 0): the max_size limitaiton of replay buffer
         buffer_cpu_offload (bool, defaults to True): whether to offload replay buffer to cpu
         eps_clip (float, defaults to 0.2): the clip coefficient of policy loss
+        c_clip (float, defaults to 3.0): the dual clip coefficient of policy loss
+        dual_clip (bool, default to False): whether to open dual clip https://arxiv.org/abs/1912.09729
         value_clip (float, defaults to 0.4): the clip coefficient of value loss
         experience_batch_size (int, defaults to 8): the batch size to use for experience generation
         max_epochs (int, defaults to 1): the number of epochs of training process
@@ -66,6 +68,8 @@ class PPOTrainer(ABC):
         buffer_limit: int = 0,
         buffer_cpu_offload: bool = True,
         eps_clip: float = 0.2,
+        c_clip: float = 3.0,
+        dual_clip: bool = False,
         value_clip: float = 0.2,
         micro_rollout_batch_size: int = 8,
         gradient_checkpointing: bool = False,
@@ -108,7 +112,7 @@ class PPOTrainer(ABC):
         self.actor_scheduler = actor_scheduler
         self.critic_scheduler = critic_scheduler
 
-        self.actor_loss_fn = PolicyLoss(eps_clip)
+        self.actor_loss_fn = PolicyLoss(eps_clip, c_clip, dual_clip)
         self.critic_loss_fn = ValueLoss(value_clip)
         self.ptx_loss_fn = GPTLMLoss()
 
@@ -284,11 +288,12 @@ class PPOTrainer(ABC):
         action_probs = F.softmax(output["logits"][:, :-1, :], dim=-1)[:, -num_actions:, :]
 
         # loss function
-        actor_loss = self.actor_loss_fn(
+        actor_loss, ppo_info = self.actor_loss_fn(
             action_log_probs,
             experience.action_log_probs,
             experience.advantages,
             action_mask=experience.action_mask,
+            return_info=True,
         )
         # mixtral
         if self.aux_loss:
@@ -344,6 +349,10 @@ class PPOTrainer(ABC):
                 ).item()
             else:
                 status[k] = v.mean().item()
+        for k, v in ppo_info.items():
+            status[k] = (
+                (v.to("cpu") * experience.info["response_length"]).sum() / experience.info["response_length"].sum()
+            ).item()
         return status
 
     def training_step_critic(self, experience: Experience) -> Dict[str, float]:
