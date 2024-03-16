@@ -122,6 +122,8 @@ class NaiveExperienceMaker(ABC):
         
         # generate seq
         inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
+        if generate_kwargs["ref_argmax"]:
+            generate_kwargs["do_sample"] = False
         sequences, attention_mask, _ = self.initial_model.generate(**inputs, **generate_kwargs)
 
         # rewards
@@ -174,19 +176,9 @@ class NaiveExperienceMaker(ABC):
 
             # relative reward
             if relative_reward == "v1":
-                assert self.r
+                assert self.r is not None
                 r = r - 0.5 * self.r
             
-            snapshots.append([sequences, r, action_log_probs, base_action_log_probs, attention_mask, action_mask, value])
-
-        # relative reward
-        if relative_reward == "v2":
-            avg = torch.stack([s[1] for s in snapshots], dim=1).mean(dim=-1)
-            for s in snapshots:
-                s[1] -= avg
-
-        for i in range(rollout_repeat):
-            sequences, r, action_log_probs, base_action_log_probs, attention_mask, action_mask, value = snapshots[i]
             reward, kl = compute_reward(
                 r,
                 self.kl_ctl.value,

@@ -246,6 +246,7 @@ def train(args):
         reward_fn=reward_gsm8k,
         # fro GPT generation
         do_sample=True,
+        ref_argmax=args.ref_argmax,
         max_new_tokens=args.generate_max_len,
         max_length=args.max_len,
         temperature=args.temperature,
@@ -325,6 +326,7 @@ if __name__ == "__main__":
     parser.add_argument("--train_batch_size", type=int, default=128)
     parser.add_argument("--load_checkpoint", action="store_true", default=False)
     parser.add_argument("--normalize_reward", action="store_true", default=False)
+    parser.add_argument("--ref_argmax", action="store_true", default=False)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
