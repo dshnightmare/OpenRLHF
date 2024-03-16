@@ -228,6 +228,7 @@ def train(args):
         micro_train_batch_size=args.micro_train_batch_size,
         micro_rollout_batch_size=args.micro_rollout_batch_size,
         rollout_repeat=args.rollout_repeat,
+        relative_reward=args.relative_reward,
         gradient_checkpointing=args.gradient_checkpointing,
         tokenizer=tokenizer,
         prompt_max_len=args.prompt_max_len,
@@ -305,6 +306,7 @@ if __name__ == "__main__":
     parser.add_argument("--rollout_batch_size", type=int, default=512)
     parser.add_argument("--micro_rollout_batch_size", type=int, default=8)
     parser.add_argument("--rollout_repeat", type=int, default=1)
+    parser.add_argument("--relative_reward", type=str, default="")
     parser.add_argument("--max_epochs", type=int, default=1)
     parser.add_argument("--prompt_max_len", type=int, default=1024)
     parser.add_argument("--generate_max_len", type=int, default=1024)

@@ -96,6 +96,7 @@ class NaiveExperienceMaker(ABC):
         self.kl_ctl = kl_controller
         self.strategy = strategy
         self.reward_fn = reward_fn
+        self.r = None
 
     # tokenizer
     def tokenize_fn(self, texts, max_length, device):
@@ -109,73 +110,122 @@ class NaiveExperienceMaker(ABC):
         return {k: v.to(device) for k, v in batch.items()}
 
     @torch.no_grad()
-    def make_experience(self, prompts: Union[str, List[str]], responses: Union[str, List[str]]=None, **generate_kwargs) -> Experience:
+    def make_ref_experience(
+        self,
+        prompts: Union[str, List[str]],
+        responses: Union[str, List[str]]=None,
+        **generate_kwargs
+    ) -> None:
+        self.initial_model.eval()
+        if self.reward_model:
+            self.reward_model.eval()
+        
+        # generate seq
+        inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
+        sequences, attention_mask, _ = self.initial_model.generate(**inputs, **generate_kwargs)
+
+        # rewards
+        if self.reward_model:
+            self.r = self.reward_model(sequences, attention_mask)
+        else:
+            preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
+            r, _ = zip(*[self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)])
+            self.r = torch.tensor(r, dtype=torch.float, device='cuda')
+
+    @torch.no_grad()
+    def make_experience(
+        self, 
+        prompts: Union[str, List[str]], 
+        responses: Union[str, List[str]]=None, 
+        relative_reward: str = "",
+        rollout_repeat: int = 1,
+        **generate_kwargs
+    ) -> List[Experience]:
         self.actor.eval()
         self.critic.eval()
         self.initial_model.eval()
         if self.reward_model:
             self.reward_model.eval()
 
-        # generate seq
-        inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
-        sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
-        num_actions = action_mask.size(1)
+        snapshots = []
+        ret = []
+        for _ in range(rollout_repeat):
+            # generate seq
+            inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
+            sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
+            num_actions = action_mask.size(1)
 
-        # log probs
-        action_log_probs = self.actor(sequences, num_actions, attention_mask)
+            # log probs
+            action_log_probs = self.actor(sequences, num_actions, attention_mask)
 
-        # init log probs
-        base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
+            # init log probs
+            base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
 
-        # values
-        value = self.critic(sequences, action_mask, attention_mask)
+            # values
+            value = self.critic(sequences, action_mask, attention_mask)
 
-        # rewards
-        if self.reward_model:
-            r = self.reward_model(sequences, attention_mask)
-        else:
-            preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
-            r, status = zip(*[self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)])
-            r = torch.tensor(r, dtype=torch.float, device='cuda')
+            # rewards
+            if self.reward_model:
+                r = self.reward_model(sequences, attention_mask)
+            else:
+                preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
+                r, status = zip(*[self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)])
+                r = torch.tensor(r, dtype=torch.float, device='cuda')
 
-        reward, kl = compute_reward(
-            r,
-            self.kl_ctl.value,
-            action_log_probs,
-            base_action_log_probs,
-            action_mask=action_mask,
-        )
-        advantage, returns = self.get_advantages_and_returns(
-            value,
-            reward,
-            action_mask,
-            generate_kwargs["gamma"],
-            generate_kwargs["lambd"],
-        )
+            # relative reward
+            if relative_reward == "v1":
+                assert self.r
+                r = r - 0.5 * self.r
+            
+            snapshots.append([sequences, r, action_log_probs, base_action_log_probs, attention_mask, action_mask, value])
 
-        info = {
-            "kl": masked_mean(kl, action_mask, dim=-1),
-            "ppl": masked_mean(-action_log_probs, action_mask, dim=-1),
-            "reward": r,
-            "reward_status": status,
-            "return": reward.sum(dim=-1),
-            "response_length": action_mask.float().sum(dim=-1),
-            "total_length": attention_mask.float().sum(dim=-1),
-        }
+        # relative reward
+        if relative_reward == "v2":
+            avg = torch.stack([s[1] for s in snapshots], dim=1).mean(dim=-1)
+            for s in snapshots:
+                s[1] -= avg
+
+        for i in range(rollout_repeat):
+            sequences, r, action_log_probs, base_action_log_probs, attention_mask, action_mask, value = snapshots[i]
+            reward, kl = compute_reward(
+                r,
+                self.kl_ctl.value,
+                action_log_probs,
+                base_action_log_probs,
+                action_mask=action_mask,
+            )
+            advantage, returns = self.get_advantages_and_returns(
+                value,
+                reward,
+                action_mask,
+                generate_kwargs["gamma"],
+                generate_kwargs["lambd"],
+            )
+            info = {
+                "kl": masked_mean(kl, action_mask, dim=-1),
+                "ppl": masked_mean(-action_log_probs, action_mask, dim=-1),
+                "reward": r,
+                "reward_status": status,
+                "return": reward.sum(dim=-1),
+                "response_length": action_mask.float().sum(dim=-1),
+                "total_length": attention_mask.float().sum(dim=-1),
+            }
+            ret.append(Experience(
+                sequences,
+                action_log_probs,
+                value,
+                returns,
+                advantage,
+                attention_mask,
+                action_mask,
+                info,
+            ))
+        
         # reset model state
         self.actor.train()
         self.critic.train()
 
-        return Experience(
-            sequences,
-            action_log_probs,
-            value,
-            returns,
-            advantage,
-            attention_mask,
-            action_mask,
-            info,
-        )
+        return ret
 
     @torch.no_grad()
     def get_advantages_and_returns(

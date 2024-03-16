@@ -37,6 +37,8 @@ class PPOTrainer(ABC):
         eps_clip (float, defaults to 0.2): the clip coefficient of policy loss
         c_clip (float, defaults to 3.0): the dual clip coefficient of policy loss
         dual_clip (bool, default to False): whether to open dual clip https://arxiv.org/abs/1912.09729
+        rollout_repeat (int, default to 1)
+        relative_reward (str, default to "")
         value_clip (float, defaults to 0.4): the clip coefficient of value loss
         experience_batch_size (int, defaults to 8): the batch size to use for experience generation
         max_epochs (int, defaults to 1): the number of epochs of training process
@@ -73,6 +75,7 @@ class PPOTrainer(ABC):
         value_clip: float = 0.2,
         micro_rollout_batch_size: int = 8,
         rollout_repeat: int = 1,
+        relative_reward: str = "",
         gradient_checkpointing: bool = False,
         max_epochs: int = 1,
         max_norm: float = 1.0,
@@ -98,6 +101,7 @@ class PPOTrainer(ABC):
         self.ptx_coef = ptx_coef
         self.micro_train_batch_size = micro_train_batch_size
         self.rollout_repeat = rollout_repeat
+        self.relative_reward = relative_reward
         self.kl_target = kl_target
         self.prompt_max_len = prompt_max_len
         self.ema_beta = ema_beta
@@ -163,7 +167,8 @@ class PPOTrainer(ABC):
         self.pretrain_dataloader = pretrain_dataloader
         self.eval_dataloader = eval_dataloader
 
-        update_timesteps = args.rollout_batch_size // (self.strategy.world_size * self.micro_rollout_batch_size)
+        update_timesteps = args.rollout_batch_size // (self.strategy.world_size * self.micro_rollout_batch_size * self.rollout_repeat)
+        assert update_timesteps >= 1
         global_step = 1
 
         # get eval and save steps
@@ -176,46 +181,53 @@ class PPOTrainer(ABC):
             if isinstance(self.prompts_dataloader.sampler, DistributedSampler):
                 self.prompts_dataloader.sampler.set_epoch(episode)
             pbar = tqdm(
-                range(self.prompts_dataloader.__len__() * self.rollout_repeat),
+                range(self.prompts_dataloader.__len__()),
                 desc=f"Episode [{episode + 1}/{args.num_episodes}]",
                 disable=not self.strategy.is_rank_0(),
             )
 
             for rand_prompts in self.prompts_dataloader:
-                for _ in range(self.rollout_repeat):
+                if isinstance(rand_prompts[0], str):
+                    prompts, responses = rand_prompts, None
+                else:
+                    prompts, responses = rand_prompts
 
-                    if isinstance(rand_prompts[0], str):
-                        experience = self.experience_maker.make_experience(rand_prompts, **self.generate_kwargs)
-                    else:
-                        prompts, responses = rand_prompts
-                        experience = self.experience_maker.make_experience(prompts, responses, **self.generate_kwargs)
+                if self.relative_reward == "v1":
+                    # use ref to generate first
+                    self.experience_maker.make_ref_experience(prompts, responses, **self.generate_kwargs)
                     
-                    self.replay_buffer.append(experience)
+                list_experience = self.experience_maker.make_experience(
+                    prompts, responses, self.relative_reward, self.rollout_repeat, **self.generate_kwargs)
+                
+                for e in list_experience:
+                    self.replay_buffer.append(e)
+                
+                # generate_num = micro_rollout_batch_size * rollout_repeat samples
+                if global_step % update_timesteps == 0:
+                    # print prompt/answer in each update step
+                    status ={}
+                    experience = list_experience[0]
+                    total_num = experience.sequences.size(0)
+                    for attr in type(experience.info['reward_status'][0]).__members__:
+                        select = [s.name == attr for s in experience.info['reward_status']]
+                        output = self.tokenizer.batch_decode(experience.sequences[select], skip_special_tokens=True)
+                        if output:
+                            self.strategy.print(attr)
+                            self.strategy.print(output[0])
+                        status[attr] = len(output) / total_num
+                    status = self.strategy.all_reduce(status)
 
-                    if global_step % update_timesteps == 0:
-                        # print prompt/answer in each update step
-                        status ={}
-                        total_num = experience.sequences.size(0)
-                        for attr in type(experience.info['reward_status'][0]).__members__:
-                            select = [s.name == attr for s in experience.info['reward_status']]
-                            output = self.tokenizer.batch_decode(experience.sequences[select], skip_special_tokens=True)
-                            if output:
-                                self.strategy.print(attr)
-                                self.strategy.print(output[0])
-                            status[attr] = len(output) / total_num
-                        status = self.strategy.all_reduce(status)
+                    torch.cuda.empty_cache()
+                    self.replay_buffer.normalize("advantages", self.strategy)
+                    status.update(self.ppo_train(global_step // update_timesteps <= args.critic_warmup_step))
+                    self.replay_buffer.clear()
+                    torch.cuda.empty_cache()
+                    self.kl_ctl.update(status["kl"], args.rollout_batch_size)
+                    # logs/checkpoints
+                    self.save_logs_and_checkpoints(args, global_step // update_timesteps, pbar, status)
 
-                        torch.cuda.empty_cache()
-                        self.replay_buffer.normalize("advantages", self.strategy)
-                        status.update(self.ppo_train(global_step // update_timesteps <= args.critic_warmup_step))
-                        self.replay_buffer.clear()
-                        torch.cuda.empty_cache()
-                        self.kl_ctl.update(status["kl"], args.rollout_batch_size)
-                        # logs/checkpoints
-                        self.save_logs_and_checkpoints(args, global_step // update_timesteps, pbar, status)
-
-                    pbar.update()
-                    global_step = global_step + 1
+                pbar.update()
+                global_step = global_step + 1
 
     def ppo_train(self, warmup=False):
         # replay buffer may be empty at first, we should rebuild at each training
