@@ -178,7 +178,16 @@ class NaiveExperienceMaker(ABC):
             if relative_reward == "v1":
                 assert self.r is not None
                 r = r - 0.5 * self.r
-            
+            snapshots.append([sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value])
+
+        # relative reward
+        if relative_reward == "v2":
+            avg = torch.stack([s[1] for s in snapshots], dim=1).mean(dim=-1)
+            for s in snapshots:
+                s[1] -= avg
+
+        for i in range(rollout_repeat):
+            sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value = snapshots[i]
             reward, kl = compute_reward(
                 r,
                 self.kl_ctl.value,
