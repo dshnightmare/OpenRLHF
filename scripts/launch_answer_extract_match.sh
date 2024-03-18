@@ -10,7 +10,7 @@ else
   MODEL_PATH=/mnt/pfs/jinfeng_team/SFT/wanqian/yq9/models/math-policy/qwen_14b_timu1_finegrained_label_instruct_0109
 fi
 
-open_compatible=0
+openai_compatible=0
 
 if [[ $openai_compatible -eq 0 ]]; then
   openai_infix=".openai"

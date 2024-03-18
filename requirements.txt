@@ -13,7 +13,9 @@ openai==1.14.0
 optimum
 peft
 ray[default]
+requests
 tiktoken==0.6.0
+sentencepiece==0.1.99
 torch
 torchmetrics
 tqdm
