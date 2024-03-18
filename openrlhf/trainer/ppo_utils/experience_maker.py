@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from openrlhf.models.actor import Actor
 from openrlhf.models.utils import compute_reward, masked_mean
+from openrlhf.utils.deepspeed import RunningMoments
 from openrlhf.utils.logging import init_logger
 
 logger = init_logger(__name__)
@@ -97,6 +98,8 @@ class NaiveExperienceMaker(ABC):
         self.strategy = strategy
         self.reward_fn = reward_fn
         self.r = None
+        self.ori_running_moments = RunningMoments()
+        self.running_moments = RunningMoments()
 
     # tokenizer
     def tokenize_fn(self, texts, max_length, device):
@@ -174,17 +177,34 @@ class NaiveExperienceMaker(ABC):
                 r, status = zip(*[self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)])
                 r = torch.tensor(r, dtype=torch.float, device='cuda')
 
-            # relative reward
-            if relative_reward == "v1":
-                assert self.r is not None
-                r = r - 0.5 * self.r
             snapshots.append([sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value])
 
         # relative reward
-        if relative_reward == "v2":
+        if relative_reward == "v1":
+            # method2: scaling by std
+            # method1: scaling by mean
+            assert self.r is not None
+            for s in snapshots:
+                self.ori_running_moments.update(s[1])
+                r = s[1] - 0.5 * self.r
+                self.running_moments.update(r)
+                if self.running_moments.mean.is_nonzero():
+                    s[1] = r * self.ori_running_moments.mean.item() / self.running_moments.mean.item()
+                else:
+                    raise ValueError(self.running_moments.mean, self.running_moments.count)
+        elif relative_reward == "v2":
+            # method1: scaling by mean
+            # method2: scaling by std
             avg = torch.stack([s[1] for s in snapshots], dim=1).mean(dim=-1)
             for s in snapshots:
-                s[1] -= avg
+                self.ori_running_moments.update(s[1])
+                r = s[1] - avg
+                if r.eq(0.).all(): # special cases: all the same, use original
+                    pass
+                else:
+                    s[1] = r + self.ori_running_moments.mean.item()
+        else:
+            raise ValueError
 
         for i in range(rollout_repeat):
             sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value = snapshots[i]

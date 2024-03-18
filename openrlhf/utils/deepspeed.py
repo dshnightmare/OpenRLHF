@@ -417,3 +417,52 @@ class DeepspeedStrategy(ABC):
             load_lr_scheduler_states=load_lr_scheduler_states,
             load_module_only=load_module_only,
         )
+    
+def get_global_statistics(xs: torch.Tensor, group=None) -> Tuple[float, float, int]:
+    """
+    Computes element-wise mean and variance of the tensor across processes
+    """
+    sum_and_count = torch.tensor([xs.sum(), xs.numel()], device=xs.device)
+    dist.all_reduce(sum_and_count, dist.ReduceOp.SUM, group=group)
+    global_sum, count = sum_and_count
+    global_mean = global_sum / count
+
+    sum_var = torch.sum((xs - global_mean) ** 2)
+    dist.all_reduce(sum_var, dist.ReduceOp.SUM, group=group)
+    global_var = sum_var / count
+    return global_mean, global_var, count
+
+
+class RunningMoments:
+    def __init__(self):
+        """
+        Calculates the running mean and standard deviation of a data stream. Modified version of
+        https://github.com/DLR-RM/stable-baselines3/blob/a6f5049a99a4c21a6f0bcce458ca3306cef310e0/stable_baselines3/common/running_mean_std.py
+        """
+        self.mean = 0
+        self.std = 1
+        self.var = 1
+        self.count = 1e-24
+
+    def update(self, xs: torch.Tensor) -> Tuple[float, float]:
+        """Updates running moments from batch's moments computed across ranks"""
+        if dist.is_initialized():
+            xs_mean, xs_var, xs_count = get_global_statistics(xs)
+        else:
+            xs_count = xs.numel()
+            xs_var, xs_mean = torch.var_mean(xs, unbiased=False)
+
+        delta = xs_mean - self.mean
+        tot_count = self.count + xs_count
+
+        new_sum = xs_var * xs_count
+        # correct old_sum deviation accounting for the new mean
+        old_sum = self.var * self.count + delta**2 * self.count * xs_count / tot_count
+        tot_sum = old_sum + new_sum
+
+        self.mean += delta * xs_count / tot_count
+        self.var = tot_sum / tot_count
+        self.std = (self.var * tot_count / (tot_count - 1)).sqrt()
+        self.count = tot_count
+
+        return xs_mean, (xs_var * xs_count / (xs_count - 1)).sqrt()
