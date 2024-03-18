@@ -203,8 +203,6 @@ class NaiveExperienceMaker(ABC):
                     pass
                 else:
                     s[1] = r + self.ori_running_moments.mean.item()
-        else:
-            raise ValueError
 
         for i in range(rollout_repeat):
             sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value = snapshots[i]
