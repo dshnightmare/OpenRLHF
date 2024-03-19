@@ -1,4 +1,5 @@
 import math
+import copy
 import os.path
 from abc import ABC
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -134,6 +135,9 @@ class PPOTrainer(ABC):
             actor, critic, reward_model, initial_model, tokenizer, prompt_max_len, self.kl_ctl, strategy, reward_fn
         )
         self.replay_buffer = NaiveReplayBuffer(micro_train_batch_size, buffer_limit, buffer_cpu_offload)
+
+        # for eval
+        self.best_score = -10000
 
         self._wandb = None
         if self.strategy.args.use_wandb and self.strategy.is_rank_0():
@@ -407,7 +411,47 @@ class PPOTrainer(ABC):
         return status
     
     def evaluate(self, dataloader):
-        return {}
+        # eval
+        status = {}
+        all_exp = []
+        pbar = tqdm(
+            self.eval_dataloader,
+            desc=f"Eval epoch",
+            disable=not self.strategy.is_rank_0(),
+        )
+        for data in pbar:
+            if isinstance(data[0], str):
+                prompts, responses = data, None
+            else:
+                prompts, responses = data
+            eval_generate = copy.deepcopy(self.generate_kwargs)
+            eval_generate.update({
+                'do_sample': False,
+                'temperature': 0.0,
+                'topp': 1.0,
+                'repetition_penalty': 1.0,
+                })
+            list_experience = self.experience_maker.make_experience(prompts, responses, **eval_generate)
+            all_exp.extend(list_experience)
+            pbar.update()   
+        
+        for attr in type(all_exp[0].info['reward_status'][0]).__members__:
+            total_num = 0
+            status[attr] = 0
+            for experience in all_exp:
+                total_num += experience.sequences.size(0)
+                select = [s.name == attr for s in experience.info['reward_status']]
+                status[attr] += len(select)
+            status[attr] /= total_num
+        status = self.strategy.all_reduce(status)
+
+        if status['CORRECT'] > self.best_score:
+            self.best_score = status['CORRECT']
+            # TODO save better model
+
+        status['best_score'] = self.best_score
+        return status
+
 
     def save_logs_and_checkpoints(self, args, global_step, step_bar, logs_dict={}):
         if global_step % args.logging_steps == 0:
