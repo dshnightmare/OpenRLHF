@@ -22,7 +22,7 @@ done
 match_model=/mnt/pfs/jinfeng_team/SFT/wanqian/yq9/models/math-policy/qwen_14b_timu1_finegrained_label_instruct_0109
 for i in `seq 0 7`;
 do
-  CUDA_VISIBLE_DEVICES=$i nohup python -m vllm.entrypoints${openai_infix}.api_server --port 200$i --model extract_model \
+  CUDA_VISIBLE_DEVICES=$i nohup python -m vllm.entrypoints${openai_infix}.api_server --port 200$i --model match_model \
     --trust-remote-code --disable-log-stats --enforce-eager -tp 1 $model_name_arg --gpu-memory-utilization 0.4 &>/dev/null &
 done
 
