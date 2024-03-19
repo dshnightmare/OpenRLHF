@@ -198,11 +198,12 @@ class NaiveExperienceMaker(ABC):
             avg = torch.stack([s[1] for s in snapshots], dim=1).mean(dim=-1)
             for s in snapshots:
                 self.ori_running_moments.update(s[1])
-                r = s[1] - avg
-                if r.eq(0.).all(): # special cases: all the same, use original
-                    pass
+                r = s[1] - 0.5 * avg
+                self.running_moments.update(r)
+                if self.running_moments.mean.is_nonzero():
+                    s[1] = r * self.ori_running_moments.mean.item() / self.running_moments.mean.item()
                 else:
-                    s[1] = r + self.ori_running_moments.mean.item()
+                    raise ValueError(self.running_moments.mean, self.running_moments.count)
 
         for i in range(rollout_repeat):
             sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value = snapshots[i]

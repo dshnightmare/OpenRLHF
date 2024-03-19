@@ -120,10 +120,10 @@ def train(args):
             args.eval_data_probs,
             strategy,
             args.seed,
-            max_count=args.max_samples,
+            max_count=args.max_eval_samples,
             return_eval=False,
         )
-        eval_data = eval_data.select(range(min(args.max_samples, len(eval_data))))
+        eval_data = eval_data.select(range(min(args.max_eval_samples, len(eval_data))))
         eval_dataset = PromptWithResponseDataset(eval_data, tokenizer, strategy, input_template=args.input_template)
         eval_dataloader = strategy.setup_dataloader(eval_dataset, args.micro_rollout_batch_size, True, True)
         strategy.print("eval: ", len(eval_data))
@@ -251,6 +251,7 @@ def train(args):
         max_length=args.max_len,
         temperature=args.temperature,
         top_p=args.top_p,
+        repetition_penalty=args.repetition_penalty,
         pad_token_id=tokenizer.pad_token_id,
         eos_token_id=tokenizer.eos_token_id,
     )
@@ -313,6 +314,7 @@ if __name__ == "__main__":
     parser.add_argument("--generate_max_len", type=int, default=1024)
     parser.add_argument("--max_len", type=int, default=None)
     parser.add_argument("--max_samples", type=int, default=100000)
+    parser.add_argument("--max_eval_samples", type=int, default=512)
     parser.add_argument("--max_norm", type=float, default=1.0)
     parser.add_argument("--l2", type=float, default=0.0)
     parser.add_argument("--ptx_coef", type=float, default=0.05)
@@ -329,6 +331,7 @@ if __name__ == "__main__":
     parser.add_argument("--ref_argmax", action="store_true", default=False)
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--repetition_penalty", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
 
     parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for deepspeed")
