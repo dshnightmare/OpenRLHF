@@ -134,7 +134,7 @@ class NaiveExperienceMaker(ABC):
             self.r = self.reward_model(sequences, attention_mask)
         else:
             preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
-            r, _ = zip(*[self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)])
+            r, _ = zip(*self.reward_fn(prompts, preds, responses))
             self.r = torch.tensor(r, dtype=torch.float, device='cuda')
 
     @torch.no_grad()
@@ -174,7 +174,7 @@ class NaiveExperienceMaker(ABC):
                 r = self.reward_model(sequences, attention_mask)
             else:
                 preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
-                r, status = zip(*[self.reward_fn(pred, rsp) for pred, rsp in zip(preds, responses)])
+                r, status = zip(*self.reward_fn(prompts, preds, responses))
                 r = torch.tensor(r, dtype=torch.float, device='cuda')
 
             snapshots.append([sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value])
