@@ -4,6 +4,7 @@ import math
 import os
 from copy import deepcopy
 from datetime import datetime
+from importlib import import_module
 
 import torch
 from torch.utils.data import DataLoader
@@ -14,7 +15,7 @@ from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
 
-from tal.utils import reward_gsm8k, get_scheduler
+from tal.utils import get_scheduler
 
 
 def train(args):
@@ -243,7 +244,7 @@ def train(args):
         ema_beta=0.992,
         ptx_coef=args.ptx_coef,
         max_norm=args.max_norm,
-        reward_fn=reward_gsm8k,
+        reward_fn=getattr(import_module('tal.utils'), args.reward_fn),
         # fro GPT generation
         do_sample=True,
         ref_argmax=args.ref_argmax,
@@ -371,6 +372,9 @@ if __name__ == "__main__":
     # custom dataset key name
     parser.add_argument("--input_key", type=str, default=None)
     parser.add_argument("--output_key", type=str, default=None)
+
+    # reward fn
+    parser.add_argument("--reward_fn", type=str, default="reward_gsm8k")
 
     # wandb pamameters
     parser.add_argument("--use_wandb", type=str, default=None)
