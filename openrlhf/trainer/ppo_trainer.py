@@ -441,7 +441,7 @@ class PPOTrainer(ABC):
             for experience in all_exp:
                 total_num += experience.sequences.size(0)
                 select = [s.name == attr for s in experience.info['reward_status']]
-                status[attr] += len(select)
+                status[attr] += sum(select)
             status[attr] /= total_num
         status = self.strategy.all_reduce(status)
 
@@ -470,7 +470,9 @@ class PPOTrainer(ABC):
 
         # TODO: Add evaluation mechanism for PPO
         if global_step % args.eval_steps == 0:
-            eval_logs = self.evaluate(self.eval_dataloader)
+            eval_logs ={}
+            if self.eval_dataloader:
+                eval_logs.update(self.evaluate(self.eval_dataloader))
             # wandb
             if self._wandb is not None and self.strategy.is_rank_0():
                 logs = {

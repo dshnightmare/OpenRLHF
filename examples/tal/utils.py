@@ -105,7 +105,7 @@ def reward_tal(prompts, pred_lines, gold_lines):
             # stop=[QWEN_IM_END, QWEN_IM_START],
             # stop_token_ids=[QWEN_IM_END_ID, QWEN_IM_START_ID],
         )
-        retry = 1
+        retry = 5
         ret = None
         while retry > 0:
             try:
@@ -113,7 +113,7 @@ def reward_tal(prompts, pred_lines, gold_lines):
                 break
             except:
                 retry -= 1
-        assert ret is not None
+        assert ret is not None, prompt
         x = ret["text"][0][len(prompt):]
         return idx, x
 
@@ -128,7 +128,7 @@ def reward_tal(prompts, pred_lines, gold_lines):
                 "extract": hit.get("extract_response")
             }
             prompt = format_prompt(obj, run_mode)
-            prompts.append((idx, prompt))
+            prompts.append(prompt)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
             futures = [executor.submit(do_call, idx, prompt, run_mode) for idx, prompt in enumerate(prompts)]
