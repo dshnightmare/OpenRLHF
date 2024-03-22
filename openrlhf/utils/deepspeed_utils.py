@@ -15,6 +15,7 @@ def get_train_ds_config(
     adam_offload=True,
     stage=2,
     bf16=True,
+    fp16=False,
     max_norm=1.0,
     zpg=8,
     grad_accum_dtype=None,
@@ -50,6 +51,13 @@ def get_train_ds_config(
         "bf16": {
             "enabled": bf16,
         },
+        "fp16": {
+            "enabled": fp16,
+            "loss_scale": 0,
+            "loss_scale_window": 1000,
+            "hysteresis": 2,
+            "min_loss_scale": 1,
+        },
         "gradient_clipping": max_norm,
         "prescale_gradients": False,
         "wall_clock_breakdown": False,
@@ -61,6 +69,7 @@ def get_eval_ds_config(
     offload,
     stage=0,
     bf16=True,
+    fp16=False,
 ):
     zero_opt_dict = {
         "stage": stage,
@@ -75,6 +84,13 @@ def get_eval_ds_config(
         "zero_optimization": zero_opt_dict,
         "bf16": {
             "enabled": bf16,
+        },
+        "fp16": {
+            "enabled": fp16,
+            "loss_scale": 0,
+            "loss_scale_window": 1000,
+            "hysteresis": 2,
+            "min_loss_scale": 1,
         },
         "gradient_clipping": 1.0,
         "prescale_gradients": False,

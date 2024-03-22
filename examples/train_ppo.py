@@ -339,6 +339,7 @@ if __name__ == "__main__":
     parser.add_argument("--zero_stage", type=int, default=2)
     parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
     parser.add_argument("--bf16", action="store_true", default=False)
+    parser.add_argument("--fp16", action="store_true", default=False)
     parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
     parser.add_argument("--actor_scheduler", type=str, default="cosine")
     parser.add_argument("--critic_learning_rate", type=float, default=9e-6)

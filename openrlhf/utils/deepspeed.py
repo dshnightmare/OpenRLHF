@@ -52,6 +52,7 @@ class DeepspeedStrategy(ABC):
         self.train_batch_size = train_batch_size
         self.micro_train_batch_size = micro_train_batch_size
         self.bf16 = bf16
+        self.fp16 = getattr(args, "fp16", False)
         self.seed = seed
         self.max_norm = max_norm
         self.adam_offload = getattr(args, "adam_offload", False)
@@ -186,6 +187,7 @@ class DeepspeedStrategy(ABC):
             adam_offload=self.adam_offload,
             stage=self.stage,
             bf16=self.bf16,
+            fp16=self.fp16,
             max_norm=self.max_norm,
             zpg=self.zpg,
             grad_accum_dtype=self.grad_accum_dtype,
@@ -219,7 +221,7 @@ class DeepspeedStrategy(ABC):
 
     def get_ds_eval_config(self, offload=False):
         # DS Config
-        ds_config = get_eval_ds_config(offload=offload, stage=self.stage if self.stage == 3 else 0, bf16=self.bf16)
+        ds_config = get_eval_ds_config(offload=offload, stage=self.stage if self.stage == 3 else 0, bf16=self.bf16, fp16=self.fp16)
         ds_config["train_micro_batch_size_per_gpu"] = self.micro_train_batch_size
         ds_config["train_batch_size"] = self.train_batch_size
 
