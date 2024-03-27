@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 # from transformers.trainer import get_scheduler
 
-from openrlhf.datasets import PromptWithResponseDataset, SFTDataset
+from openrlhf.datasets import PromptWithResponseDataset, SFTDataset, PromptWithResponseAndBaselineDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
@@ -111,7 +111,11 @@ def train(args):
         return_eval=False,
     )
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    prompts_dataset = PromptWithResponseDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+    if args.baseline_key:
+        prompts_dataset = PromptWithResponseAndBaselineDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+    else:
+        prompts_dataset = PromptWithResponseDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+    
     prompts_dataloader = strategy.setup_dataloader(prompts_dataset, args.micro_rollout_batch_size, True, True)
     strategy.print("train: ", len(prompts_data))
 
@@ -373,9 +377,11 @@ if __name__ == "__main__":
     # custom dataset key name
     parser.add_argument("--input_key", type=str, default=None)
     parser.add_argument("--output_key", type=str, default=None)
+    parser.add_argument("--baseline_key", type=str, default=None)
 
     # reward fn
     parser.add_argument("--reward_fn", type=str, default="reward_gsm8k")
+    parser.add_argument("--reward_coff", type=float, default=0.5)
 
     # wandb pamameters
     parser.add_argument("--use_wandb", type=str, default=None)

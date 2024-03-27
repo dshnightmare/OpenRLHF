@@ -194,14 +194,18 @@ class PPOTrainer(ABC):
                 if isinstance(rand_prompts[0], str):
                     prompts, responses = rand_prompts, None
                 else:
-                    prompts, responses = rand_prompts
+                    if not args.baseline_key:
+                        prompts, responses, baseline = rand_prompts, None
+                    else:
+                        prompts, responses, baseline = rand_prompts
 
-                if self.relative_reward == "v1":
+
+                if (self.relative_reward == "v1") and (not args.baseline_key):
                     # use ref to generate first
-                    self.experience_maker.make_ref_experience(prompts, responses, **self.generate_kwargs)
+                    self.experience_maker.make_ref_experience(prompts, responses, **self.generate_kwargs)  # use ref mdoel generate reward and use it as baseline
                     
                 list_experience = self.experience_maker.make_experience(
-                    prompts, responses, self.relative_reward, self.rollout_repeat, **self.generate_kwargs)
+                    prompts, responses, baseline, self.relative_reward, args.reward_coff, self.rollout_repeat, **self.generate_kwargs)
                 
                 for e in list_experience:
                     self.replay_buffer.append(e)
@@ -212,14 +216,14 @@ class PPOTrainer(ABC):
                     status ={}
                     experience = list_experience[0]
                     total_num = experience.sequences.size(0)
-                    for attr in type(experience.info['reward_status'][0]).__members__:
+                    for attr in type(experience.info['reward_status'][0]).__members__:  # 
                         select = [s.name == attr for s in experience.info['reward_status']]
                         output = self.tokenizer.batch_decode(experience.sequences[select], skip_special_tokens=True)
-                        if output:
+                        if output:  # output one case for each attr
                             self.strategy.print(attr)
                             self.strategy.print(output[0])
-                        status[attr] = len(output) / total_num
-                    status = self.strategy.all_reduce(status)
+                        status[attr] = len(output) / total_num  # calculate the CORRECT/INCORRECT/BADFORMAT rate in replay_buffer
+                    status = self.strategy.all_reduce(status)  # reduce the information from all ranks 
 
                     torch.cuda.empty_cache()
                     self.replay_buffer.normalize("advantages", self.strategy)

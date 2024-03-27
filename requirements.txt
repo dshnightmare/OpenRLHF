@@ -4,7 +4,7 @@ deepspeed==0.13.5
 einops
 fire==0.6.0
 flash-attn==2.4.2
-fsspec==2023.4.0
+fsspec>=2023.4.0
 ipdb==0.13.13
 isort
 jsonlines

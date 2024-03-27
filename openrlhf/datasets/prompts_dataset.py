@@ -3,7 +3,7 @@ from tqdm import tqdm
 from .utils import exist_and_not_none
 
 
-def preprocess_data(data, input_template=None, input_key=None, output_key=None) -> str:
+def preprocess_data(data, input_template=None, input_key=None, output_key=None, baseline_key = None) -> str:
     # custom dataset
     if input_key:
         prompt = data[input_key]
@@ -48,15 +48,23 @@ def preprocess_data(data, input_template=None, input_key=None, output_key=None) 
         else:
             raise ValueError("Unknown prompts dataset")
 
+    res = list()
     # input template
     if input_template:
         prompt = input_template.format(prompt)
-
+    res.append(prompt)
+    # if output_key:
+    #     response = data[output_key]
+    #     return prompt, response
+    # else:
+    #     return prompt
     if output_key:
         response = data[output_key]
-        return prompt, response
-    else:
-        return prompt
+        res.append(response)
+    if baseline_key:
+        baseline = data[baseline_key]
+        res.append(baseline)
+    return res
     
 
 class PromptDataset(Dataset):
@@ -118,6 +126,7 @@ class PromptWithResponseDataset(Dataset):
         self.input_template = input_template
         input_key = getattr(self.strategy.args, "input_key", None)
         output_key = getattr(self.strategy.args, "output_key", None)
+        assert output_key is not None, "output_key is required for PromptWithResponseDataset"
 
         self.prompts = []
         self.response = []
@@ -132,3 +141,36 @@ class PromptWithResponseDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.prompts[idx], self.response[idx]
+    
+class PromptWithResponseAndBaselineDataset(Dataset):
+    def __init__(
+        self,
+        dataset,
+        tokenizer,
+        strategy,
+        input_template="Human: {}\nAssistant: ",
+    ) -> None:
+        super().__init__()
+        self.strategy = strategy
+        self.tokenizer = tokenizer
+        self.input_template = input_template
+        input_key = getattr(self.strategy.args, "input_key", None)
+        output_key = getattr(self.strategy.args, "output_key", None)
+        baseline_key = getattr(self.strategy.args, "baseline_key", None)
+        assert output_key and baseline_key, "output_key and baseline_key are required for PromptWithResponseAndBaselineDataset"
+        
+        self.prompts = []
+        self.response = []
+        self.baseline = []
+        for data in tqdm(dataset, disable=not self.strategy.is_rank_0()):
+            prompt, response, baseline = preprocess_data(data, input_template, input_key, output_key, baseline_key)
+            self.prompts.append(prompt)
+            self.response.append(response)
+            self.baseline.append(baseline)
+
+    def __len__(self):
+        length = len(self.prompts)
+        return length
+
+    def __getitem__(self, idx):
+        return self.prompts[idx], self.response[idx], self.baseline[idx]

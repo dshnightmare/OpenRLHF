@@ -142,7 +142,9 @@ class NaiveExperienceMaker(ABC):
         self, 
         prompts: Union[str, List[str]], 
         responses: Union[str, List[str]]=None, 
+        baselines: torch.Tensor = None,  
         relative_reward: str = "",
+        reward_coff: float = 0.5,
         rollout_repeat: int = 1,
         **generate_kwargs
     ) -> List[Experience]:
@@ -155,9 +157,10 @@ class NaiveExperienceMaker(ABC):
         snapshots = []
         ret = []
         for _ in range(rollout_repeat):
-            # generate seq
+            # generate seq n_samples times
             inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
             sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
+
             num_actions = action_mask.size(1)
 
             # log probs
@@ -179,18 +182,24 @@ class NaiveExperienceMaker(ABC):
 
             snapshots.append([sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value])
 
-        # relative reward
+        # relative reward, reshape the reward from environment
         if relative_reward == "v1":
             # method2: scaling by std
             # method1: scaling by mean
-            assert self.r is not None
             for s in snapshots:
-                self.ori_running_moments.update(s[1])
-                r = s[1] - 0.5 * self.r
-                self.running_moments.update(r)
+                self.ori_running_moments.update(s[1])  # record the original reward information (e.g. mean or std) of solution during traning
+                if baselines is not None:
+                    baselines = baselines.to(s[1].device)
+                    r = s[1] - reward_coff*baselines
+                else:
+                    assert self.r is not None
+                    r = s[1] - 0.5 * self.r
+                self.running_moments.update(r)  # record the reward information after subtracting the baseline
                 if self.running_moments.mean.is_nonzero():
                     s[1] = r * self.ori_running_moments.mean.item() / self.running_moments.mean.item()
-                else:
+                elif self.running_moments.count <= 512:
+                    s[1] = r
+                else: 
                     raise ValueError(self.running_moments.mean, self.running_moments.count)
         elif relative_reward == "v2":
             # method1: scaling by mean
@@ -207,14 +216,14 @@ class NaiveExperienceMaker(ABC):
 
         for i in range(rollout_repeat):
             sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value = snapshots[i]
-            reward, kl = compute_reward(
+            reward, kl = compute_reward(  
                 r,
                 self.kl_ctl.value,
-                action_log_probs,
+                action_log_probs,  
                 base_action_log_probs,
                 action_mask=action_mask,
             )
-            advantage, returns = self.get_advantages_and_returns(
+            advantage, returns = self.get_advantages_and_returns(   
                 value,
                 reward,
                 action_mask,
@@ -290,7 +299,7 @@ class NaiveExperienceMaker(ABC):
             lastgaelam = delta + gamma * lambd * lastgaelam
             advantages_reversed.append(lastgaelam)
         advantages = torch.stack(advantages_reversed[::-1], dim=1)
-        returns = advantages + values
+        returns = advantages + values  # R = A + V
         return advantages.detach(), returns
 
 
@@ -359,7 +368,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             action_mask,
             generate_kwargs["gamma"],
             generate_kwargs["lambd"],
-        )
+        )  
 
         info = {
             "kl": masked_mean(kl, action_mask, dim=-1),
