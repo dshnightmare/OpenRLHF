@@ -195,7 +195,7 @@ class PPOTrainer(ABC):
                     prompts, responses = rand_prompts, None
                 else:
                     if not args.baseline_key:
-                        prompts, responses, baseline = rand_prompts, None
+                        (prompts, responses), baseline = rand_prompts, None
                     else:
                         prompts, responses, baseline = rand_prompts
 
