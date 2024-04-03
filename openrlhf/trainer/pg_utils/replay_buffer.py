@@ -193,7 +193,7 @@ class NaiveReplayBuffer(ABC):
 
         # for DP
         # mean
-        sum_and_count = torch.tensor([items_vector.sum(), items_vector.size()], device=items_vector.device)
+        sum_and_count = torch.tensor([items_vector.sum(), items_vector.numel()], device=items_vector.device)
         all_sum, all_count = strategy.all_reduce(sum_and_count, "sum")
         mean = all_sum / all_count
         # std
