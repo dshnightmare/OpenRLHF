@@ -28,7 +28,8 @@ class BufferItem:
 
     sequences: torch.Tensor
     action_log_probs: torch.Tensor
-    r: torch.Tensor
+    returns: torch.Tensor
+    baselines: torch.Tensor
     attention_mask: Optional[torch.LongTensor]
     action_mask: Optional[torch.BoolTensor]
     base_action_log_probs: Optional[torch.Tensor]
@@ -41,7 +42,8 @@ def split_experience_batch(experience: Experience) -> List[BufferItem]:
     keys = (
         "sequences",
         "action_log_probs",
-        "r",
+        "returns",
+        "baselines",
         "attention_mask",
         "action_mask",
         "base_action_log_probs",
@@ -82,14 +84,15 @@ def make_experience_batch(items: List[BufferItem]) -> Experience:
     keys = (
         "sequences",
         "action_log_probs",
-        "r",
+        "returns",
+        "baselines",
         "attention_mask",
         "action_mask",
         "base_action_log_probs",
     )
     for key in keys:
         vals = [getattr(item, key) for item in items]  
-        if key in ["r",]:
+        if key in ["baselines","returns"]:
             kwargs[key] = torch.stack(vals, dim=0)
         else:
             batch_data = zero_pad_sequences(vals, "left")
@@ -184,7 +187,7 @@ class NaiveReplayBuffer(ABC):
         return experience
     
     def normalize(self, attribute: str, strategy) -> None:
-        assert attribute == "r"  # normalize rl reward (sequence)
+        assert attribute == "returns"  # normalize rl reward (sequence)
         items = []
         for item in self:
             items.append(getattr(item, attribute))

@@ -28,20 +28,22 @@ class PGLoss(nn.Module):
     def forward(self,
                 log_probs: torch.Tensor,
                 base_log_probs: torch.Tensor,
-                r: torch.Tensor,
+                returns: torch.Tensor,
+                baselines: torch.Tensor,
                 action_mask: Optional[torch.Tensor] = None,
-                obj_with_kl: bool = False,
+                objective_with_kl: bool = False,
                 beta: float = 0.04,
                 return_info: bool = False):
         """
         log_probs: (B, A)
         base_log_probs: (B, A)
-        r: (B)
+        returns: (B)
+        baselines: (B)
         action_mask: (B, A)
         """
         response_log_probs = compute_log_probs(log_probs,action_mask)  # (B,)
-        pg_objective = torch.mean(response_log_probs*r)
-        if obj_with_kl:
+        pg_objective = torch.mean(response_log_probs*(returns-baselines))
+        if objective_with_kl:
             # estimate kl divergence of pi and base
             kl = ((base_log_probs.exp()/log_probs.exp()-base_log_probs+log_probs-1)*action_mask).mean()
             loss = -(pg_objective - beta*kl)
@@ -96,7 +98,8 @@ class PGTrainer(ABC):
         buffer_cpu_offload: bool = True,
         micro_rollout_batch_size: int = 8,
         rollout_repeat: int = 1,
-        relative_reward: str = "",
+        relative_reward_type: str = "",
+        baseline_type: str = "",
         gradient_checkpointing: bool = False,
         max_epochs: int = 1,
         max_norm: float = 1.0,
@@ -125,7 +128,8 @@ class PGTrainer(ABC):
         self.ptx_coef = ptx_coef
         self.micro_train_batch_size = micro_train_batch_size
         self.rollout_repeat = rollout_repeat
-        self.relative_reward = relative_reward
+        self.relative_reward_type = relative_reward_type
+        self.baseline_type = baseline_type
         self.prompt_max_len = prompt_max_len
         self.ema_beta = ema_beta
         self.gradient_checkpointing = gradient_checkpointing
@@ -140,7 +144,7 @@ class PGTrainer(ABC):
         self.actor_loss_fn = PGLoss()
         self.ptx_loss_fn = GPTLMLoss()
 
-        self.obj_with_kl = self.args.obj_with_kl
+        self.objective_with_kl = self.args.objective_with_kl
         self.beta = self.args.beta  # the coff of kl part in loss
 
         # # Mixtral 8x7b
@@ -177,8 +181,8 @@ class PGTrainer(ABC):
 
             wandb.define_metric("train/global_step")
             wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
-            wandb.define_metric("eval/epoch")
-            wandb.define_metric("eval/*", step_metric="eval/epoch", step_sync=True)
+            # wandb.define_metric("eval/epoch")
+            # wandb.define_metric("eval/*", step_metric="eval/epoch", step_sync=True)
 
     def fit(
         self,
@@ -214,12 +218,13 @@ class PGTrainer(ABC):
                 if isinstance(rand_prompts[0], str):
                     prompts, responses = rand_prompts, None
                 else:
-                    if args.baseline_key:
-                        prompts, responses,baseline = rand_prompts
+                    if args.relative_key:
+                        prompts, responses,relative_reward = rand_prompts
                     else:
-                        (prompts, responses), baseline  = rand_prompts, None
+                        (prompts, responses), relative_reward  = rand_prompts, None
                 list_experience = self.experience_maker.make_experience(
-                    prompts, responses, baseline, self.relative_reward, args.reward_coff,self.rollout_repeat,self.obj_with_kl, **self.generate_kwargs)
+                    prompts, responses, relative_reward, self.relative_reward_type, self.baseline_type,
+                    args.reward_coff,self.rollout_repeat,self.objective_with_kl, **self.generate_kwargs)
                 for e in list_experience:
                     self.replay_buffer.append(e)
                 
@@ -240,7 +245,7 @@ class PGTrainer(ABC):
 
                     torch.cuda.empty_cache()
                     if args.normalize_reward:
-                        self.replay_buffer.normalize("r", self.strategy)
+                        self.replay_buffer.normalize("returns", self.strategy)
                     status.update(self.pg_train())
                     self.replay_buffer.clear()
                     torch.cuda.empty_cache()
@@ -286,7 +291,7 @@ class PGTrainer(ABC):
                 status_list.append(status)
                 short_status = {
                     "pg": status["actor/pg_loss"],
-                    "rm": status["reward"],
+                    "rm": status["true_reward"],
                     "ret": status["returns"],
                     "glen": status["response_length"],
                     "tlen": status["total_length"],
@@ -319,13 +324,15 @@ class PGTrainer(ABC):
         )  
         action_probs = F.softmax(output["logits"][:, :-1, :], dim=-1)[:, -num_actions:, :]  # used to calculate entropy
 
+
         # loss function
         actor_loss, pg_info = self.actor_loss_fn(
             action_log_probs,
             experience.base_action_log_probs,
-            experience.r,
+            experience.returns,
+            experience.baselines,
             action_mask=experience.action_mask,
-            obj_with_kl=self.obj_with_kl,
+            objective_with_kl=self.objective_with_kl,
             beta = self.beta,
             return_info=True,
         )

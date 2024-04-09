@@ -156,7 +156,12 @@ class PromptWithResponseAndBaselineDataset(Dataset):
         self.input_template = input_template
         input_key = getattr(self.strategy.args, "input_key", None)
         output_key = getattr(self.strategy.args, "output_key", None)
-        baseline_key = getattr(self.strategy.args, "baseline_key", None)
+        if hasattr(self.strategy.args, "baseline_key"):  # PPO
+            baseline_key = self.strategy.args.baseline_key
+        elif hasattr(self.strategy.args, "relative_key"):  # PG
+            baseline_key = self.strategy.args.relative_key
+        else:
+            baseline_key = None
         assert output_key and baseline_key, "output_key and baseline_key are required for PromptWithResponseAndBaselineDataset"
         
         self.prompts = []

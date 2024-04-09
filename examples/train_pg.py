@@ -93,7 +93,7 @@ def train(args):
         return_eval=False,
     )
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    if args.baseline_key:
+    if args.relative_key:
         prompts_dataset = PromptWithResponseAndBaselineDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
     else:
         prompts_dataset = PromptWithResponseDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
@@ -198,7 +198,8 @@ def train(args):
         micro_train_batch_size=args.micro_train_batch_size,
         micro_rollout_batch_size=args.micro_rollout_batch_size,
         rollout_repeat=args.rollout_repeat,
-        relative_reward=args.relative_reward,
+        relative_reward_type=args.relative_reward_type,
+        baseline_type=args.baseline_type,
         gradient_checkpointing=args.gradient_checkpointing,
         tokenizer=tokenizer,
         prompt_max_len=args.prompt_max_len,
@@ -326,16 +327,17 @@ if __name__ == "__main__":
     # custom dataset key name
     parser.add_argument("--input_key", type=str, default=None)
     parser.add_argument("--output_key", type=str, default=None)
-    parser.add_argument("--baseline_key", type=str, default=None)
+    parser.add_argument("--relative_key", type=str, default=None)
 
     # reward fn
     parser.add_argument("--normalize_reward", action="store_true", default=False)   # normalize rl reward
     parser.add_argument("--reward_fn", type=str, default="reward_gsm8k")
-    parser.add_argument("--relative_reward", type=str, default="")
+    parser.add_argument("--relative_reward_type", type=str, default="")
+    parser.add_argument("--baseline_type", type=str, default=None)
     parser.add_argument("--reward_coff", type=float, default=1)  # reward = reward - reward_coff * baseline
 
     # objective
-    parser.add_argument("--obj_with_kl", action="store_true", default=False)
+    parser.add_argument("--objective_with_kl", action="store_true", default=False)
     parser.add_argument("--beta", type=float, default=0.01)
 
     # wandb pamameters
