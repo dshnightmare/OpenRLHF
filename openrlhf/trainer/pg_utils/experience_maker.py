@@ -151,23 +151,6 @@ class NaiveExperienceMaker(ABC):
             snapshots.append([sequences, true_r, reward, status, action_log_probs, base_action_log_probs, attention_mask, action_mask])
 
         baselines = []
-        if baseline_type == "remax": 
-            # 贪心生成
-            greedy_generate_kwargs = copy.deepcopy(generate_kwargs)
-            greedy_generate_kwargs["num_beams"] = 1
-            greedy_generate_kwargs["do_sample"] = False
-            sequences, attention_mask, action_mask = self.actor.generate(**inputs, **greedy_generate_kwargs) # generation by argmax sampling
-            # 计算真实奖励
-            preds = self.tokenizer.batch_decode(sequences, skip_special_tokens=True)
-            r_greedy, status = zip(*self.reward_fn(prompts, preds, responses))
-            r_greedy = torch.tensor(r_greedy, dtype=torch.float) 
-            # 计算RL奖励
-            num_actions = action_mask.size(1)
-            action_log_probs = self.actor(sequences, num_actions, attention_mask)
-            base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
-            reward_greedy, kl = compute_reward(r_greedy,self.kl_ctl.value,action_log_probs,base_action_log_probs,action_mask=action_mask)
-            baselines = [reward_greedy]*rollout_repeat
-
         if baseline_type == "rloo":  # RLOO
             assert rollout_repeat>1, "rollout_repeat should be greater than 1"
             group_baselines = []
