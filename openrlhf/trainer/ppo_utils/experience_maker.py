@@ -142,8 +142,8 @@ class NaiveExperienceMaker(ABC):
         self, 
         prompts: Union[str, List[str]], 
         responses: Union[str, List[str]]=None, 
-        baselines: torch.Tensor = None,  
-        relative_reward: str = "",
+        relative_reward: torch.Tensor = None,  
+        relative_reward_type: str = "",
         reward_coff: float = 0.5,
         rollout_repeat: int = 1,
         **generate_kwargs
@@ -182,26 +182,26 @@ class NaiveExperienceMaker(ABC):
 
             snapshots.append([sequences, r, status, action_log_probs, base_action_log_probs, attention_mask, action_mask, value])
 
-        # relative reward, reshape the reward from environment
-        if relative_reward == "v1":
+        # relative reward type, reshape the reward from environment
+        if relative_reward_type == "v1":
             # method2: scaling by std
             # method1: scaling by mean
             for s in snapshots:
                 self.ori_running_moments.update(s[1])  # record the original reward information (e.g. mean or std) of solution during traning
-                if baselines is not None:
-                    baselines = baselines.to(s[1].device)
-                    r = s[1] - reward_coff*baselines
+                if relative_reward is not None:
+                    relative_reward = relative_reward.to(s[1].device)
+                    r = s[1] - reward_coff*relative_reward
                 else:
                     assert self.r is not None
                     r = s[1] - 0.5 * self.r
-                self.running_moments.update(r)  # record the reward information after subtracting the baseline
+                self.running_moments.update(r)  # record the reward information after subtracting the relative_reward
                 if self.running_moments.mean.is_nonzero():
                     s[1] = r * self.ori_running_moments.mean.item() / self.running_moments.mean.item()
                 elif self.running_moments.count <= 512:
                     s[1] = r
                 else: 
                     raise ValueError(self.running_moments.mean, self.running_moments.count)
-        elif relative_reward == "v2":
+        elif relative_reward_type == "v2":
             # method1: scaling by mean
             # method2: scaling by std
             avg = torch.stack([s[1] for s in snapshots], dim=1).mean(dim=-1)

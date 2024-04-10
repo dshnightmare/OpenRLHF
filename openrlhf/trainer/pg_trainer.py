@@ -1,21 +1,16 @@
-import math
 import copy
 import os.path
 from abc import ABC
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 
-import ray
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
-from dataclasses import dataclass
-from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, SwitchBalancingLoss, ValueLoss
+from openrlhf.models import Actor, GPTLMLoss
 from openrlhf.models.utils import masked_mean
-
 from .pg_utils import Experience, NaiveExperienceMaker,NaiveReplayBuffer, AdaptiveKLController, FixedKLController
 
 
@@ -63,7 +58,6 @@ class PGTrainer(ABC):
     Args:
         strategy (Strategy): the strategy to use for training
         actor (Actor): the actor model in ppo algorithm
-        critic (nn.Module): the critic model in ppo algorithm
         reward_model (nn.Module): the reward model in rlhf algorithm to make reward of sentences
         initial_model (Actor): the initial model in rlhf algorithm to generate reference logits to limit the update of actor
         actor_optim (Optimizer): the optimizer to use for actor model
@@ -72,7 +66,8 @@ class PGTrainer(ABC):
         buffer_limit (int, defaults to 0): the max_size limitaiton of replay buffer
         buffer_cpu_offload (bool, defaults to True): whether to offload replay buffer to cpu
         rollout_repeat (int, default to 1)
-        relative_reward (str, default to "")
+        relative_reward_type (str, default to "") : used to reshape the true reward
+        baseline_type (str, default to ""): the type of baseline to use
         experience_batch_size (int, defaults to 8): the batch size to use for experience generation
         max_epochs (int, defaults to 1): the number of epochs of training process
         tokenier (Callable, optional): the tokenizer to use for tokenizing the input

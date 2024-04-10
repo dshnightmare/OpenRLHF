@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 # from transformers.trainer import get_scheduler
 
-from openrlhf.datasets import PromptWithResponseDataset, SFTDataset, PromptWithResponseAndBaselineDataset
+from openrlhf.datasets import PromptWithResponseDataset, SFTDataset, PromptWithResponseRelativeRewardDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PPOTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
@@ -111,8 +111,8 @@ def train(args):
         return_eval=False,
     )
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    if args.baseline_key:
-        prompts_dataset = PromptWithResponseAndBaselineDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+    if args.relative_key:
+        prompts_dataset = PromptWithResponseRelativeRewardDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
     else:
         prompts_dataset = PromptWithResponseDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
     
@@ -233,7 +233,7 @@ def train(args):
         micro_train_batch_size=args.micro_train_batch_size,
         micro_rollout_batch_size=args.micro_rollout_batch_size,
         rollout_repeat=args.rollout_repeat,
-        relative_reward=args.relative_reward,
+        relative_reward_type=args.relative_reward_type,
         gradient_checkpointing=args.gradient_checkpointing,
         tokenizer=tokenizer,
         prompt_max_len=args.prompt_max_len,
@@ -313,7 +313,7 @@ if __name__ == "__main__":
     parser.add_argument("--rollout_batch_size", type=int, default=512)
     parser.add_argument("--micro_rollout_batch_size", type=int, default=8)
     parser.add_argument("--rollout_repeat", type=int, default=1)
-    parser.add_argument("--relative_reward", type=str, default="")
+    parser.add_argument("--relative_reward_type", type=str, default="")
     parser.add_argument("--max_epochs", type=int, default=1)
     parser.add_argument("--prompt_max_len", type=int, default=1024)
     parser.add_argument("--generate_max_len", type=int, default=1024)
@@ -377,7 +377,7 @@ if __name__ == "__main__":
     # custom dataset key name
     parser.add_argument("--input_key", type=str, default=None)
     parser.add_argument("--output_key", type=str, default=None)
-    parser.add_argument("--baseline_key", type=str, default=None)
+    parser.add_argument("--relative_key", type=str, default=None)
 
     # reward fn
     parser.add_argument("--reward_fn", type=str, default="reward_gsm8k")

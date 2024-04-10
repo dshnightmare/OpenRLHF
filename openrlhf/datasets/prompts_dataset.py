@@ -3,7 +3,7 @@ from tqdm import tqdm
 from .utils import exist_and_not_none
 
 
-def preprocess_data(data, input_template=None, input_key=None, output_key=None, baseline_key = None) -> str:
+def preprocess_data(data, input_template=None, input_key=None, output_key=None, relative_key = None) -> str:
     # custom dataset
     if input_key:
         prompt = data[input_key]
@@ -61,9 +61,9 @@ def preprocess_data(data, input_template=None, input_key=None, output_key=None, 
     if output_key:
         response = data[output_key]
         res.append(response)
-    if baseline_key:
-        baseline = data[baseline_key]
-        res.append(baseline)
+    if relative_key:
+        relative_reward = data[relative_key]
+        res.append(relative_reward)
     return res
     
 
@@ -142,7 +142,7 @@ class PromptWithResponseDataset(Dataset):
     def __getitem__(self, idx):
         return self.prompts[idx], self.response[idx]
     
-class PromptWithResponseAndBaselineDataset(Dataset):
+class PromptWithResponseRelativeRewardDataset(Dataset):
     def __init__(
         self,
         dataset,
@@ -156,26 +156,21 @@ class PromptWithResponseAndBaselineDataset(Dataset):
         self.input_template = input_template
         input_key = getattr(self.strategy.args, "input_key", None)
         output_key = getattr(self.strategy.args, "output_key", None)
-        if hasattr(self.strategy.args, "baseline_key"):  # PPO
-            baseline_key = self.strategy.args.baseline_key
-        elif hasattr(self.strategy.args, "relative_key"):  # PG
-            baseline_key = self.strategy.args.relative_key
-        else:
-            baseline_key = None
-        assert output_key and baseline_key, "output_key and baseline_key are required for PromptWithResponseAndBaselineDataset"
+        relative_key = getattr(self.strategy.args, "relative_key", None)
+        assert output_key and relative_key, "output_key and relative_key are required for PromptWithResponseRelativeRewardDataset"
         
         self.prompts = []
         self.response = []
-        self.baseline = []
+        self.relative_reward = []
         for data in tqdm(dataset, disable=not self.strategy.is_rank_0()):
-            prompt, response, baseline = preprocess_data(data, input_template, input_key, output_key, baseline_key)
+            prompt, response, relative_reward = preprocess_data(data, input_template, input_key, output_key, relative_key)
             self.prompts.append(prompt)
             self.response.append(response)
-            self.baseline.append(baseline)
+            self.relative_reward.append(relative_reward)
 
     def __len__(self):
         length = len(self.prompts)
         return length
 
     def __getitem__(self, idx):
-        return self.prompts[idx], self.response[idx], self.baseline[idx]
+        return self.prompts[idx], self.response[idx], self.relative_reward[idx]

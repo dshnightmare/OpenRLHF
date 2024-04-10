@@ -1,20 +1,9 @@
-import math
-import copy
-import os.path
 from abc import ABC
-from typing import Any, Callable, Dict, List, Optional, Union, Tuple
-
-import ray
+from typing import List, Optional, Union, Tuple
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import copy
-from torch import Tensor
-from torch.optim import Optimizer
-from torch.utils.data import DataLoader, DistributedSampler
-from tqdm import tqdm
 from dataclasses import dataclass
-from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, SwitchBalancingLoss, ValueLoss
+from openrlhf.models import Actor
 from openrlhf.models.utils import masked_mean
 from openrlhf.utils.deepspeed import RunningMoments
 
@@ -172,7 +161,7 @@ class NaiveExperienceMaker(ABC):
             info = {
                 "kl":kl/action_mask.float().sum(dim=-1),
                 "ppl": masked_mean(-action_log_probs, action_mask, dim=-1),
-                "returns": reward,  # rl reward
+                "returns": reward,  # reward has kl penalty
                 "true_reward": true_r,  # true reward
                 "reward_status": status,
                 "response_length": action_mask.float().sum(dim=-1),
@@ -181,7 +170,7 @@ class NaiveExperienceMaker(ABC):
             ret.append(Experience(
                 sequences,
                 action_log_probs,
-                true_r if objective_with_kl else reward,  # if obj with kl, rl reward equals to true reward
+                true_r if objective_with_kl else reward,  # if objective with kl, rl reward equals to true reward
                 baseline,
                 attention_mask,
                 action_mask,

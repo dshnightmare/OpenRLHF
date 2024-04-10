@@ -39,7 +39,7 @@ class PPOTrainer(ABC):
         c_clip (float, defaults to 3.0): the dual clip coefficient of policy loss
         dual_clip (bool, default to False): whether to open dual clip https://arxiv.org/abs/1912.09729
         rollout_repeat (int, default to 1)
-        relative_reward (str, default to "")
+        relative_reward_type (str, default to "")
         value_clip (float, defaults to 0.4): the clip coefficient of value loss
         experience_batch_size (int, defaults to 8): the batch size to use for experience generation
         max_epochs (int, defaults to 1): the number of epochs of training process
@@ -76,7 +76,7 @@ class PPOTrainer(ABC):
         value_clip: float = 0.2,
         micro_rollout_batch_size: int = 8,
         rollout_repeat: int = 1,
-        relative_reward: str = "",
+        relative_reward_type: str = "",
         gradient_checkpointing: bool = False,
         max_epochs: int = 1,
         max_norm: float = 1.0,
@@ -102,7 +102,7 @@ class PPOTrainer(ABC):
         self.ptx_coef = ptx_coef
         self.micro_train_batch_size = micro_train_batch_size
         self.rollout_repeat = rollout_repeat
-        self.relative_reward = relative_reward
+        self.relative_reward_type = relative_reward_type
         self.kl_target = kl_target
         self.prompt_max_len = prompt_max_len
         self.ema_beta = ema_beta
@@ -194,18 +194,18 @@ class PPOTrainer(ABC):
                 if isinstance(rand_prompts[0], str):
                     prompts, responses = rand_prompts, None
                 else:
-                    if not args.baseline_key:
-                        (prompts, responses), baseline = rand_prompts, None
+                    if not args.relative_key:
+                        (prompts, responses), relative_reward = rand_prompts, None
                     else:
-                        prompts, responses, baseline = rand_prompts
+                        prompts, responses, relative_reward = rand_prompts
 
 
-                if (self.relative_reward == "v1") and (not args.baseline_key):
+                if (self.relative_reward_type == "v1") and (not args.relative_key):
                     # use ref to generate first
-                    self.experience_maker.make_ref_experience(prompts, responses, **self.generate_kwargs)  # use ref mdoel generate reward and use it as baseline
+                    self.experience_maker.make_ref_experience(prompts, responses, **self.generate_kwargs)  # use ref mdoel generate reward and use it as relative_reward
                     
                 list_experience = self.experience_maker.make_experience(
-                    prompts, responses, baseline, self.relative_reward, args.reward_coff, self.rollout_repeat, **self.generate_kwargs)
+                    prompts, responses, relative_reward, self.relative_reward_type, args.reward_coff, self.rollout_repeat, **self.generate_kwargs)
                 
                 for e in list_experience:
                     self.replay_buffer.append(e)
