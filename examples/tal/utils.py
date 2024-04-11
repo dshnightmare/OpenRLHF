@@ -469,11 +469,11 @@ def reward_poly(prompts, pred_lines, gold_lines):
             else:
                 ret[idx] = (-0.1, gsm8kResult.BADFORMAT)
         except multiprocessing.TimeoutError as e:
-            print("timeout", pred_lines[idx])
-            ret[idx] = (1.0, gsm8kResult.INCORRECT)
+            print("timeout", pred_lines[idx], gold_lines[idx])
+            ret[idx] = (0.0, gsm8kResult.INCORRECT)
         except Exception as e:
-            print("error", pred_lines[idx])
-            ret[idx] = (1.0, gsm8kResult.BADFORMAT)
+            print("error", pred_lines[idx], gold_lines[idx])
+            ret[idx] = (-0.1, gsm8kResult.BADFORMAT)
     return ret
     
 
