@@ -40,9 +40,10 @@ class PGLoss(nn.Module):
         pg_objective = torch.mean(response_log_probs*(returns-baselines))
         if objective_with_kl:
             # estimate kl divergence of pi and base
-            kl = ((base_log_probs.exp()/log_probs.exp()-base_log_probs+log_probs-1)*action_mask).mean()
-            loss = -(pg_objective - beta*kl)
-            info = {'kl_loss':kl}
+            token_kl = base_log_probs.exp()/log_probs.exp()-base_log_probs+log_probs-1
+            mean_kl = masked_mean(token_kl,action_mask)
+            loss = -(pg_objective - beta*mean_kl)
+            info = {'kl_loss':mean_kl}
         else:
             loss = -pg_objective
             info = {}
@@ -57,7 +58,7 @@ class PGTrainer(ABC):
 
     Args:
         strategy (Strategy): the strategy to use for training
-        actor (Actor): the actor model in ppo algorithm
+        actor (Actor): the actor model in pg algorithm
         reward_model (nn.Module): the reward model in rlhf algorithm to make reward of sentences
         initial_model (Actor): the initial model in rlhf algorithm to generate reference logits to limit the update of actor
         actor_optim (Optimizer): the optimizer to use for actor model
@@ -213,13 +214,13 @@ class PGTrainer(ABC):
                 if isinstance(rand_prompts[0], str):
                     prompts, responses = rand_prompts, None
                 else:
-                    if args.relative_key:
-                        prompts, responses,relative_reward = rand_prompts
-                    else:
-                        (prompts, responses), relative_reward  = rand_prompts, None
-                list_experience = self.experience_maker.make_experience(
-                    prompts, responses, relative_reward, self.relative_reward_type, self.baseline_type,
-                    args.reward_coff,self.rollout_repeat,self.objective_with_kl, **self.generate_kwargs)
+                    prompts, responses, expand_keys_data = rand_prompts
+                relative_reward = expand_keys_data['relative_key'] if "relative_key" in expand_keys_data else None
+                prompts_difficulity = expand_keys_data['difficulty_key'] if "difficulty_key" in expand_keys_data else None
+                list_experience = self.experience_maker.make_experience(prompts, responses,relative_reward, 
+                                                                        self.relative_reward_type, args.reward_coff,self.baseline_type,
+                                                                        prompts_difficulity,self.rollout_repeat,self.objective_with_kl, 
+                                                                        **self.generate_kwargs)
                 for e in list_experience:
                     self.replay_buffer.append(e)
                 

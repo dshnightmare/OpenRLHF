@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 # from transformers.trainer import get_scheduler
 
-from openrlhf.datasets import PromptWithResponseDataset, SFTDataset, PromptWithResponseRelativeRewardDataset
+from openrlhf.datasets import PromptWithResponseDataset, SFTDataset, PromptWithResponseGeneralDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.trainer import PGTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
@@ -93,10 +93,12 @@ def train(args):
         return_eval=False,
     )
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
+    key_set = set([])
     if args.relative_key:
-        prompts_dataset = PromptWithResponseRelativeRewardDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
-    else:
-        prompts_dataset = PromptWithResponseDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+        key_set.add("relative_key")
+    if args.difficulty_key:
+        key_set.add("difficulty_key")
+    prompts_dataset = PromptWithResponseGeneralDataset(prompts_data, tokenizer, strategy, input_template=args.input_template,key_set=key_set)
     prompts_dataloader = strategy.setup_dataloader(prompts_dataset, args.micro_rollout_batch_size, True, True)
     strategy.print("train: ", len(prompts_data))
 
@@ -339,7 +341,10 @@ if __name__ == "__main__":
     # objective
     parser.add_argument("--objective_with_kl", action="store_true", default=False)
     parser.add_argument("--beta", type=float, default=0.01)
-
+    
+    # dynamic kl
+    parser.add_argument("--use_dynamic_kl", action="store_true", default=False)
+    parser.add_argument("--difficulty_key",type=str,default=None)
     # wandb pamameters
     parser.add_argument("--use_wandb", type=str, default=None)
     parser.add_argument("--wandb_org", type=str, default=None)
