@@ -14,8 +14,7 @@ def compute_reward(
     log_probs_base: torch.Tensor,
     action_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if any(kl_coef <= 0.0):
-        kl_coef = 0.0
+    assert all(kl_coef >= 0.0), "kl coff is less than zero"
     response_log_pred = torch.sum(torch.mul(log_probs,action_mask),dim=1)
     base_log_pred = torch.sum(torch.mul(log_probs_base,action_mask),dim=1)
     kl = response_log_pred - base_log_pred
@@ -137,11 +136,11 @@ class NaiveExperienceMaker(ABC):
                     self.running_moments.update(true_r) 
                     relative_reward = torch.ones_like(true_r,device=true_r.device)*self.running_moments.mean
                     true_r = true_r - reward_coff*relative_reward
-            if self.strategy.args.use_dynamic_kl:
+            if self.strategy.args.use_dynamic_kl and prompts_difficulity is not None:
                 kl_coff  = 0.01 + 0.04 * prompts_difficulity  # (base acc=0, kl coff=0.01) -> (base acc=1, kl coff=0.05)  linear increase
                 kl_coff = kl_coff.to(true_r.device)
             else:
-                kl_coff = self.kl_ctl.value
+                kl_coff = torch.ones_like(true_r)*self.kl_ctl.value
             reward, kl = compute_reward(true_r,kl_coff,action_log_probs,  base_action_log_probs,action_mask=action_mask)
             snapshots.append([sequences, true_r, reward, status, action_log_probs, base_action_log_probs, attention_mask, action_mask])
 
