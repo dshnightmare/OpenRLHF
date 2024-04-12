@@ -1,0 +1,358 @@
+import argparse
+import itertools
+import math
+import os
+from copy import deepcopy
+from datetime import datetime
+from importlib import import_module
+
+import torch
+from torch.utils.data import DataLoader
+# from transformers.trainer import get_scheduler
+
+from openrlhf.datasets import PromptWithResponseDataset, SFTDataset, PromptWithResponseGeneralDataset
+from openrlhf.models import Actor, get_llm_for_sequence_regression
+from openrlhf.trainer import ReinforceTrainer
+from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
+
+from tal.utils import get_scheduler
+
+
+def train(args):
+    # configure strategy
+    strategy = get_strategy(args)
+    strategy.setup_distributed()
+
+    # configure model
+    # load huggingface model
+    actor = Actor(
+        args.pretrain,
+        use_flash_attention_2=args.flash_attn,
+        bf16=args.bf16,
+        load_in_4bit=args.load_in_4bit,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        target_modules=args.target_modules,
+        ds_config=strategy.get_ds_train_config(is_actor=True),
+    )
+
+    if args.actor_init_on_gpu:
+        actor = actor.to(torch.cuda.current_device())
+
+    if args.reward_pretrain:
+        reward_model = get_llm_for_sequence_regression(
+            args.reward_pretrain,
+            "reward",
+            normalize_reward=args.normalize_reward,
+            use_flash_attention_2=args.flash_attn,
+            bf16=args.bf16,
+            load_in_4bit=args.load_in_4bit,
+            ds_config=strategy.get_ds_train_config(is_actor=False),
+        )
+    else:
+        reward_model = None
+
+    # configure tokenizer
+    tokenizer = get_tokenizer(args.pretrain, actor.model, "left", strategy)
+    if args.reward_pretrain:
+        get_tokenizer(args.reward_pretrain, reward_model, "left", strategy)
+    strategy.print(actor)
+
+
+    # load weights for reference actor
+    initial_model = Actor(
+        args.pretrain,
+        use_flash_attention_2=args.flash_attn,
+        bf16=args.bf16,
+        load_in_4bit=args.load_in_4bit,
+        ds_config=strategy.get_ds_eval_config(offload=False),
+    )
+    get_tokenizer(args.pretrain, initial_model.model, "left", strategy)
+
+    strategy.print("reward normalization status: {}".format(args.normalize_reward))
+    if args.reward_pretrain:
+        strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
+
+    if args.enable_ema and strategy.is_rank_0():
+        ema_model = deepcopy(actor.to("cpu"))
+    else:
+        ema_model = None
+
+    # configure optimizer
+    actor_optim = strategy.create_optimizer(
+        actor, lr=args.actor_learning_rate, betas=(0.9, 0.95), weight_decay=args.l2
+    )
+
+    # prepare datasets
+    prompts_data = blending_datasets(
+        args.prompt_data,
+        args.prompt_data_probs,
+        strategy,
+        args.seed,
+        max_count=args.max_samples,
+        return_eval=False,
+    )
+    prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
+    key_set = set([])
+    if args.relative_key:
+        key_set.add("relative_key")
+    prompts_dataset = PromptWithResponseGeneralDataset(prompts_data, tokenizer, strategy, input_template=args.input_template,key_set=key_set)
+    prompts_dataloader = strategy.setup_dataloader(prompts_dataset, args.micro_rollout_batch_size, True, True)
+    strategy.print("train: ", len(prompts_data))
+
+    if args.eval_data:
+        eval_data = blending_datasets(
+            args.eval_data,
+            args.eval_data_probs,
+            strategy,
+            args.seed,
+            max_count=args.max_eval_samples,
+            return_eval=False,
+        )
+        eval_data = eval_data.select(range(min(args.max_eval_samples, len(eval_data))))
+        eval_dataset = PromptWithResponseDataset(eval_data, tokenizer, strategy, input_template=args.input_template)
+        eval_dataloader = strategy.setup_dataloader(eval_dataset, args.micro_rollout_batch_size, True, True)
+        strategy.print("eval: ", len(eval_data))
+    else:
+        eval_dataloader = None
+
+    if args.pretrain_data:
+        pretrain_data = blending_datasets(
+            args.pretrain_data,
+            args.pretrain_data_probs,
+            strategy,
+            args.seed,
+            return_eval=False,
+        )
+        pretrain_max_len = args.max_len if args.max_len else args.prompt_max_len + args.generate_max_len
+        pretrain_dataset = SFTDataset(
+            pretrain_data.select(range(min(len(pretrain_data), args.max_epochs * len(prompts_dataset)))),
+            tokenizer,
+            pretrain_max_len,
+            strategy,
+            pretrain_mode=True,
+        )
+        pretrain_dataloader = itertools.cycle(
+            iter(
+                strategy.setup_dataloader(
+                    pretrain_dataset,
+                    args.micro_train_batch_size,
+                    True,
+                    True,
+                    pretrain_dataset.collate_fn,
+                )
+            )
+        )
+    else:
+        pretrain_dataloader = None
+
+    # configure scheduler
+    num_update_steps_per_episodes = len(prompts_data) * args.max_epochs * args.rollout_repeat // args.train_batch_size
+    max_steps = math.ceil(args.num_episodes * num_update_steps_per_episodes)
+
+    actor_scheduler = get_scheduler(
+        args.actor_scheduler,
+        actor_optim,
+        num_warmup_steps=math.ceil(max_steps * 0.03),
+        num_training_steps=max_steps,
+    )
+
+    # gradient_checkpointing
+    if args.gradient_checkpointing:
+        actor.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": args.gradient_checkpointing_use_reentrant}
+        )
+
+    # prepare models/optimizers...
+    (
+        (actor, actor_optim, actor_scheduler),
+        initial_model,
+    ) = strategy.prepare(
+        (actor, actor_optim, actor_scheduler),
+        # reward_model,
+        initial_model,
+        is_rlhf=True,
+    )
+
+    # if ema_model:
+    #     ema_model._offload = True
+    #     ema_model = strategy.prepare(ema_model, is_rlhf=True)
+    #     del ema_model._offload
+
+    # load checkpoint
+    if args.load_checkpoint:
+        strategy.print("Load checkpoint: ", args.save_path)
+
+    os.makedirs(args.save_path, exist_ok=True)
+
+    # configure Trainer
+    trainer = ReinforceTrainer(
+        strategy,
+        actor,
+        reward_model,
+        initial_model,
+        ema_model,
+        actor_optim,
+        actor_scheduler,
+        max_epochs=args.max_epochs,
+        micro_train_batch_size=args.micro_train_batch_size,
+        micro_rollout_batch_size=args.micro_rollout_batch_size,
+        rollout_repeat=args.rollout_repeat,
+        relative_reward_type=args.relative_reward_type,
+        baseline_type=args.baseline_type,
+        gradient_checkpointing=args.gradient_checkpointing,
+        tokenizer=tokenizer,
+        prompt_max_len=args.prompt_max_len,
+        kl_target=args.kl_target,
+        init_kl_coef=args.init_kl_coef,
+        ema_beta=0.992,
+        gamma = args.gamma,
+        ptx_coef=args.ptx_coef,
+        max_norm=args.max_norm,
+        reward_fn=getattr(import_module('tal.utils'), args.reward_fn),
+        
+        # fro GPT generation
+        do_sample=True,
+        ref_argmax=args.ref_argmax,
+        max_new_tokens=args.generate_max_len,
+        max_length=args.max_len,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        repetition_penalty=args.repetition_penalty,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
+
+    trainer.fit(
+        prompts_dataloader,
+        pretrain_dataloader,
+        eval_dataloader,
+        args,
+    )
+
+    # save model checkpoint after fitting on only rank0
+    if strategy.is_rank_0():
+        strategy.save_model(
+            ema_model if args.enable_ema else actor,
+            tokenizer,
+            args.save_path,
+        )
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt_data", type=str, default=None)
+    parser.add_argument(
+        "--prompt_data_probs",
+        type=str,
+        default="1.0",
+        help="sampling probs for datasets",
+    )
+    parser.add_argument("--eval_data", type=str, default=None)
+    parser.add_argument(
+        "--eval_data_probs",
+        type=str,
+        default="1.0",
+        help="sampling probs for datasets",
+    )
+    parser.add_argument("--pretrain_data", type=str, default=None)
+    parser.add_argument(
+        "--pretrain_data_probs",
+        type=str,
+        default="1.0",
+        help="sampling probs for datasets",
+    )
+    parser.add_argument("--pretrain", type=str, default=None)
+    parser.add_argument("--reward_pretrain", type=str, default=None)
+    parser.add_argument("--save_path", type=str, default="./ckpt")
+    parser.add_argument("--save_steps", type=int, default=-1)
+    parser.add_argument("--logging_steps", type=int, default=1)
+    parser.add_argument("--eval_steps", type=int, default=-1)
+    parser.add_argument("--ckpt_path", type=str, default="./ckpt/checkpoints_pg")
+    parser.add_argument("--max_ckpt_num", type=int, default=3)
+    parser.add_argument("--max_ckpt_mem", type=int, default=1000)  # 1000GB
+    parser.add_argument("--num_episodes", type=int, default=1)
+    parser.add_argument("--rollout_batch_size", type=int, default=512)
+    parser.add_argument("--micro_rollout_batch_size", type=int, default=8)
+    parser.add_argument("--rollout_repeat", type=int, default=1)
+    parser.add_argument("--kl_target", type=float, default=None)  # use for adaptive kl controler
+    parser.add_argument("--init_kl_coef", type=float, default=0.02)
+    parser.add_argument("--max_epochs", type=int, default=1)
+    parser.add_argument("--prompt_max_len", type=int, default=1024)
+    parser.add_argument("--generate_max_len", type=int, default=1024)
+    parser.add_argument("--max_len", type=int, default=None)
+    parser.add_argument("--max_samples", type=int, default=100000)
+    parser.add_argument("--max_eval_samples", type=int, default=512)
+    parser.add_argument("--max_norm", type=float, default=1.0)
+    parser.add_argument("--l2", type=float, default=0.0)
+    parser.add_argument("--ptx_coef", type=float, default=0.05)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--micro_train_batch_size", type=int, default=4)
+    parser.add_argument("--train_batch_size", type=int, default=128)
+    parser.add_argument("--load_checkpoint", action="store_true", default=False)
+    parser.add_argument("--ref_argmax", action="store_true", default=False)
+    parser.add_argument("--top_p", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--repetition_penalty", type=float, default=1.0)
+    parser.add_argument("--seed", type=int, default=42)
+
+    parser.add_argument("--local_rank", type=int, default=-1, help="local_rank for deepspeed")
+    parser.add_argument("--zero_stage", type=int, default=2)
+    parser.add_argument("--gradient_checkpointing", action="store_true", default=False)
+    parser.add_argument("--bf16", action="store_true", default=False)
+    parser.add_argument("--fp16", action="store_true", default=False)
+    parser.add_argument("--actor_learning_rate", type=float, default=1e-6)
+    parser.add_argument("--actor_scheduler", type=str, default="cosine")
+
+    ## Make EMA as an optional feature
+    parser.add_argument("--enable_ema", action="store_true", help="Enable EMA checkpoint for the model.")
+    parser.add_argument("--zpg", type=int, default=1, help="ZeRO++ max partition size")
+    parser.add_argument("--adam_offload", action="store_true", default=False)
+    parser.add_argument("--actor_init_on_gpu", action="store_true", default=False)
+    parser.add_argument("--flash_attn", action="store_true", default=False)
+    parser.add_argument("--aux_loss_coef", type=float, default=0)
+    parser.add_argument("--grad_accum_dtype", type=str, default=None)
+    parser.add_argument("--disable_trace_cache", action="store_true", default=False)
+    parser.add_argument("--load_in_4bit", action="store_true", default=False)
+    parser.add_argument("--lora_rank", type=int, default=0)
+    parser.add_argument("--lora_alpha", type=int, default=16)
+    parser.add_argument("--target_modules", type=list, default=None)
+    # parser.add_argument("--input_template", type=str, default="Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:\n{}\n\n### Response: ")
+    parser.add_argument("--input_template", type=str, default="Question:\n{}\nAnswer reasoning:\n")
+    parser.add_argument("--gradient_checkpointing_use_reentrant", action="store_true")
+
+    parser.add_argument("--bos_token", type=str, default=None)
+    parser.add_argument("--eos_token", type=str, default=None)
+    parser.add_argument("--pad_token", type=str, default=None)
+    parser.add_argument("--unk_token", type=str, default=None)
+
+    # custom dataset key name
+    parser.add_argument("--input_key", type=str, default=None)
+    parser.add_argument("--output_key", type=str, default=None)
+    parser.add_argument("--relative_key", type=str, default=None)
+
+    # reward fn
+    parser.add_argument("--normalize_reward", action="store_true", default=False)   # normalize reward
+    parser.add_argument("--normalize_returns", action="store_true", default=False)   # normalize gt
+    parser.add_argument("--reward_fn", type=str, default="reward_gsm8k")
+    parser.add_argument("--relative_reward_type", type=str, default="")
+    parser.add_argument("--baseline_type", type=str, default=None)
+    parser.add_argument("--reward_coff", type=float, default=1)  # reward = reward - reward_coff * baseline
+
+    # objective
+    parser.add_argument("--objective_with_kl", action="store_true", default=False)
+    parser.add_argument("--beta", type=float, default=0.01)
+    
+    # wandb pamameters
+    parser.add_argument("--use_wandb", type=str, default=None)
+    parser.add_argument("--wandb_org", type=str, default=None)
+    parser.add_argument("--wandb_group", type=str, default=None)
+    parser.add_argument("--wandb_project", type=str, default="openrlhf_train_reinforce")
+    parser.add_argument(
+        "--wandb_run_name",
+        type=str,
+        default="reinforce_%s" % datetime.now().strftime("%m%dT%H:%M"),
+    )
+
+    args = parser.parse_args()
+    train(args)
