@@ -414,7 +414,7 @@ class PPOTrainer(ABC):
         }
         return status
     
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, save_path):
         # eval
         status = {}
         all_exp = []
@@ -451,7 +451,12 @@ class PPOTrainer(ABC):
 
         if status['CORRECT'] > self.best_score:
             self.best_score = status['CORRECT']
-            # TODO save better model
+            if self.strategy.is_rank_0():
+                self.strategy.save_model(
+                    self.actor,
+                    self.tokenizer,
+                    save_path,
+                )
 
         status['best_score'] = self.best_score
         return status
@@ -476,7 +481,7 @@ class PPOTrainer(ABC):
         if global_step % args.eval_steps == 0:
             eval_logs ={}
             if self.eval_dataloader:
-                eval_logs.update(self.evaluate(self.eval_dataloader))
+                eval_logs.update(self.evaluate(self.eval_dataloader, os.path.join(args.save_path, "best_model")))
             # wandb
             if self._wandb is not None and self.strategy.is_rank_0():
                 logs = {
