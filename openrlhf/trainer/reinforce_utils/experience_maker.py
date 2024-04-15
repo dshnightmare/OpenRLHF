@@ -133,9 +133,9 @@ class NaiveExperienceMaker(ABC):
         for i in range(rollout_repeat):
             sequences, true_r, reward, status, action_log_probs, base_action_log_probs, attention_mask, action_mask = snapshots[i]
             if objective_with_kl:
-                gt = self.get_gt(reward, action_mask, generate_kwargs["gamma"])
-            else:
                 gt = self.get_gt(true_r, action_mask, generate_kwargs["gamma"])
+            else:
+                gt = self.get_gt(reward, action_mask, generate_kwargs["gamma"])
 
             baseline = baselines[i] if baselines else torch.zeros_like(gt)
             # info: (B,) the info of each sequence
