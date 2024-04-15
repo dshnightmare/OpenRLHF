@@ -137,7 +137,7 @@ class NaiveExperienceMaker(ABC):
                     relative_reward = torch.ones_like(true_r,device=true_r.device)*self.running_moments.mean
                     true_r = true_r - reward_coff*relative_reward
             if self.strategy.args.use_dynamic_kl and prompts_difficulity is not None:
-                kl_coff  = 0.01 + 0.04 * prompts_difficulity  # (base acc=0, kl coff=0.01) -> (base acc=1, kl coff=0.05)  linear increase
+                kl_coff  = 0.01 + 0.03 * prompts_difficulity  # (base acc=0, kl coff=0.01) -> (base acc=1, kl coff=0.05)  linear increase
                 kl_coff = kl_coff.to(true_r.device)
             else:
                 kl_coff = torch.ones_like(true_r)*self.kl_ctl.value
