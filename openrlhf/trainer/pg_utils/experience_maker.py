@@ -146,11 +146,12 @@ class NaiveExperienceMaker(ABC):
 
         baselines = []
         if baseline_type == "rloo":  # RLOO
+            rloo_idx = 1 if objective_with_kl else 2
             assert rollout_repeat>1, "rollout_repeat should be greater than 1"
             group_baselines = []
             prompts_size = len(prompts)
             for i in range(prompts_size):
-                group_reward = torch.stack([s[2][i] for s in snapshots]).unsqueeze(0) 
+                group_reward = torch.stack([s[rloo_idx][i] for s in snapshots]).unsqueeze(0) 
                 group_reward = group_reward.repeat(rollout_repeat, 1)  
                 mask = torch.ones_like(group_reward).to(group_reward.device)  
                 mask.diagonal().fill_(0)
