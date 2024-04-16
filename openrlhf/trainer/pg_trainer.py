@@ -392,12 +392,12 @@ class PGTrainer(ABC):
 
   
     
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, save_path, global_step):
         # eval
         status = {}
         all_exp = []
         pbar = tqdm(
-            self.eval_dataloader,
+            dataloader,
             desc=f"Eval epoch",
             disable=not self.strategy.is_rank_0(),
         )
@@ -429,7 +429,15 @@ class PGTrainer(ABC):
 
         if status['CORRECT'] > self.best_score:
             self.best_score = status['CORRECT']
-            # TODO save better model
+            # Check and create the directory
+            if not os.path.exists(save_path):
+                os.makedirs(save_path, exist_ok=True)
+            self.strategy.print(f"Saving best model: global_step{global_step}, acc: {self.best_score}")
+            self.strategy.save_model(
+                self.actor,
+                self.tokenizer,
+                save_path,
+            )
 
         status['best_score'] = self.best_score
         return status
@@ -454,7 +462,9 @@ class PGTrainer(ABC):
         if global_step % args.eval_steps == 0:
             eval_logs ={}
             if self.eval_dataloader:
-                eval_logs.update(self.evaluate(self.eval_dataloader))
+                eval_logs.update(self.evaluate(self.eval_dataloader,
+                                               os.path.join(args.save_path, "best_model"), 
+                                               global_step))
             # wandb
             if self._wandb is not None and self.strategy.is_rank_0():
                 logs = {
