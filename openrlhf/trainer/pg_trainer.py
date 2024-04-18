@@ -220,7 +220,7 @@ class PGTrainer(ABC):
                 list_experience = self.experience_maker.make_experience(prompts, responses,relative_reward, 
                                                                         self.relative_reward_type, args.reward_coff,self.baseline_type,
                                                                         prompts_difficulity,self.rollout_repeat,self.objective_with_kl, 
-                                                                        **self.generate_kwargs)
+                                                                        args.use_dynamic_kl,**self.generate_kwargs)
                 for e in list_experience:
                     self.replay_buffer.append(e)
                 

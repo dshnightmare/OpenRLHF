@@ -343,7 +343,7 @@ if __name__ == "__main__":
     parser.add_argument("--beta", type=float, default=0.01)
     
     # dynamic kl
-    parser.add_argument("--use_dynamic_kl", action="store_true", default=False)
+    parser.add_argument("--use_dynamic_kl", type=str, default=None)
     parser.add_argument("--difficulty_key",type=str,default=None)
     # wandb pamameters
     parser.add_argument("--use_wandb", type=str, default=None)

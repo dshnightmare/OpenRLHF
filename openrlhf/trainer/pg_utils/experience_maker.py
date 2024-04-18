@@ -106,6 +106,7 @@ class NaiveExperienceMaker(ABC):
         prompts_difficulity: torch.Tensor = None,
         rollout_repeat: int = 1,
         objective_with_kl: bool = False,
+        use_dynamic_kl: str = None,
         **generate_kwargs
     ) -> List[Experience]:
         self.actor.eval()
@@ -136,8 +137,13 @@ class NaiveExperienceMaker(ABC):
                     self.running_moments.update(true_r) 
                     relative_reward = torch.ones_like(true_r,device=true_r.device)*self.running_moments.mean
                     true_r = true_r - reward_coff*relative_reward
-            if self.strategy.args.use_dynamic_kl and prompts_difficulity is not None:
-                kl_coff  = 0.01 + 0.03 * prompts_difficulity  # (base acc=0, kl coff=0.01) -> (base acc=1, kl coff=0.05)  linear increase
+            if prompts_difficulity is not None:
+                if use_dynamic_kl == 'v1':
+                    kl_coff  = 0.01 + 0.03 * prompts_difficulity  # linear increase
+                elif use_dynamic_kl == 'v2':
+                    kl_coff  = 0.01 + 0.03 * prompts_difficulity**2  # quadratic increase
+                else:
+                    raise ValueError("use_dynamic_kl should be v1 or v2")
                 kl_coff = kl_coff.to(true_r.device)
             else:
                 kl_coff = torch.ones_like(true_r)*self.kl_ctl.value
