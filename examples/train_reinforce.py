@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from openrlhf.datasets import PromptWithResponseDataset, SFTDataset, PromptWithResponseGeneralDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
-from openrlhf.trainer import PGTrainer
+from openrlhf.trainer import ReinforceTrainer
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
 
 from tal.utils import get_scheduler
@@ -96,8 +96,6 @@ def train(args):
     key_set = set([])
     if args.relative_key:
         key_set.add("relative_key")
-    if args.difficulty_key:
-        key_set.add("difficulty_key")
     prompts_dataset = PromptWithResponseGeneralDataset(prompts_data, tokenizer, strategy, input_template=args.input_template,key_set=key_set)
     prompts_dataloader = strategy.setup_dataloader(prompts_dataset, args.micro_rollout_batch_size, True, True)
     strategy.print("train: ", len(prompts_data))
@@ -188,7 +186,7 @@ def train(args):
     os.makedirs(args.save_path, exist_ok=True)
 
     # configure Trainer
-    trainer = PGTrainer(
+    trainer = ReinforceTrainer(
         strategy,
         actor,
         reward_model,
@@ -208,6 +206,7 @@ def train(args):
         kl_target=args.kl_target,
         init_kl_coef=args.init_kl_coef,
         ema_beta=0.992,
+        gamma = args.gamma,
         ptx_coef=args.ptx_coef,
         max_norm=args.max_norm,
         reward_fn=getattr(import_module('tal.utils'), args.reward_fn),
@@ -287,6 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_norm", type=float, default=1.0)
     parser.add_argument("--l2", type=float, default=0.0)
     parser.add_argument("--ptx_coef", type=float, default=0.05)
+    parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--micro_train_batch_size", type=int, default=4)
     parser.add_argument("--train_batch_size", type=int, default=128)
     parser.add_argument("--load_checkpoint", action="store_true", default=False)
@@ -332,7 +332,8 @@ if __name__ == "__main__":
     parser.add_argument("--relative_key", type=str, default=None)
 
     # reward fn
-    parser.add_argument("--normalize_reward", action="store_true", default=False)   # normalize rl reward
+    parser.add_argument("--normalize_reward", action="store_true", default=False)   # normalize reward
+    parser.add_argument("--normalize_returns", action="store_true", default=False)   # normalize gt
     parser.add_argument("--reward_fn", type=str, default="reward_gsm8k")
     parser.add_argument("--relative_reward_type", type=str, default="")
     parser.add_argument("--baseline_type", type=str, default=None)
@@ -342,18 +343,15 @@ if __name__ == "__main__":
     parser.add_argument("--objective_with_kl", action="store_true", default=False)
     parser.add_argument("--beta", type=float, default=0.01)
     
-    # dynamic kl
-    parser.add_argument("--use_dynamic_kl", type=str, default=None)
-    parser.add_argument("--difficulty_key",type=str,default=None)
     # wandb pamameters
     parser.add_argument("--use_wandb", type=str, default=None)
     parser.add_argument("--wandb_org", type=str, default=None)
     parser.add_argument("--wandb_group", type=str, default=None)
-    parser.add_argument("--wandb_project", type=str, default="openrlhf_train_pg")
+    parser.add_argument("--wandb_project", type=str, default="openrlhf_train_reinforce")
     parser.add_argument(
         "--wandb_run_name",
         type=str,
-        default="pg_%s" % datetime.now().strftime("%m%dT%H:%M"),
+        default="reinforce_%s" % datetime.now().strftime("%m%dT%H:%M"),
     )
 
     args = parser.parse_args()

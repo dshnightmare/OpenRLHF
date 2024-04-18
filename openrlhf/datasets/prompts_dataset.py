@@ -3,7 +3,7 @@ from tqdm import tqdm
 from .utils import exist_and_not_none
 
 
-def preprocess_data(data, input_template=None, input_key=None, output_key=None, relative_key = None) -> str:
+def preprocess_data(data, input_template=None, input_key=None, output_key=None, expand_keys = None) -> str:
     # custom dataset
     if input_key:
         prompt = data[input_key]
@@ -48,23 +48,21 @@ def preprocess_data(data, input_template=None, input_key=None, output_key=None, 
         else:
             raise ValueError("Unknown prompts dataset")
 
-    res = list()
+    result = list()
+    expand_keys_data = {}
     # input template
     if input_template:
         prompt = input_template.format(prompt)
-    res.append(prompt)
-    # if output_key:
-    #     response = data[output_key]
-    #     return prompt, response
-    # else:
-    #     return prompt
+    result.append(prompt)
     if output_key:
         response = data[output_key]
-        res.append(response)
-    if relative_key:
-        relative_reward = data[relative_key]
-        res.append(relative_reward)
-    return res
+        result.append(response)
+    if expand_keys:
+        for key,value in expand_keys.items():
+            expand_keys_data[key] = data[value]
+        return result, expand_keys_data
+    else:
+        return result
     
 
 class PromptDataset(Dataset):
@@ -142,35 +140,41 @@ class PromptWithResponseDataset(Dataset):
     def __getitem__(self, idx):
         return self.prompts[idx], self.response[idx]
     
-class PromptWithResponseRelativeRewardDataset(Dataset):
+class PromptWithResponseGeneralDataset(Dataset):
     def __init__(
         self,
         dataset,
         tokenizer,
         strategy,
         input_template="Human: {}\nAssistant: ",
+        key_set = None
     ) -> None:
         super().__init__()
         self.strategy = strategy
         self.tokenizer = tokenizer
         self.input_template = input_template
+        self.key_set = key_set
         input_key = getattr(self.strategy.args, "input_key", None)
         output_key = getattr(self.strategy.args, "output_key", None)
-        relative_key = getattr(self.strategy.args, "relative_key", None)
-        assert output_key and relative_key, "output_key and relative_key are required for PromptWithResponseRelativeRewardDataset"
-        
+        expand_keys = {}
+        for key in key_set:
+            expand_keys[key] = getattr(self.strategy.args, key, None)
+        assert output_key and all([expand_keys[key] for key in key_set]), "some keys are not set in args"
+
         self.prompts = []
         self.response = []
-        self.relative_reward = []
+        self.expand_keys_data = {key: [] for key in key_set}
         for data in tqdm(dataset, disable=not self.strategy.is_rank_0()):
-            prompt, response, relative_reward = preprocess_data(data, input_template, input_key, output_key, relative_key)
+            (prompt, response), expand_keys_data = preprocess_data(data, input_template, input_key, output_key, expand_keys)
             self.prompts.append(prompt)
             self.response.append(response)
-            self.relative_reward.append(relative_reward)
+            for key in key_set:
+                self.expand_keys_data[key].append(expand_keys_data[key]) 
 
     def __len__(self):
         length = len(self.prompts)
         return length
 
     def __getitem__(self, idx):
-        return self.prompts[idx], self.response[idx], self.relative_reward[idx]
+        expand_keys_data = {key: self.expand_keys_data[key][idx] for key in self.key_set}
+        return self.prompts[idx], self.response[idx], expand_keys_data

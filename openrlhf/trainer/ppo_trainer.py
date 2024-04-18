@@ -157,8 +157,8 @@ class PPOTrainer(ABC):
 
             wandb.define_metric("train/global_step")
             wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
-            wandb.define_metric("eval/epoch")
-            wandb.define_metric("eval/*", step_metric="eval/epoch", step_sync=True)
+            wandb.define_metric("eval/global_step")
+            wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
 
     def fit(
         self,
@@ -197,13 +197,11 @@ class PPOTrainer(ABC):
                     if not args.relative_key:
                         (prompts, responses), relative_reward = rand_prompts, None
                     else:
-                        prompts, responses, relative_reward = rand_prompts
-
-
+                        prompts, responses, expand_keys_data = rand_prompts
                 if (self.relative_reward_type == "v1") and (not args.relative_key):
                     # use ref to generate first
                     self.experience_maker.make_ref_experience(prompts, responses, **self.generate_kwargs)  # use ref mdoel generate reward and use it as relative_reward
-                    
+                relative_reward = expand_keys_data['relative_key'] if 'relative_key' in expand_keys_data else None
                 list_experience = self.experience_maker.make_experience(
                     prompts, responses, relative_reward, self.relative_reward_type, args.reward_coff, self.rollout_repeat, **self.generate_kwargs)
                 

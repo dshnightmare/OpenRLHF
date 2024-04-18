@@ -4,28 +4,15 @@ import torch
 import torch.nn as nn
 from dataclasses import dataclass
 from openrlhf.models import Actor
-from openrlhf.models.utils import masked_mean
+from openrlhf.models.utils import masked_mean, compute_reward
 from openrlhf.utils.deepspeed import RunningMoments
 
-def compute_reward(
-    r: Union[torch.Tensor, float],
-    kl_coef: float,
-    log_probs: torch.Tensor,
-    log_probs_base: torch.Tensor,
-    action_mask: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    assert all(kl_coef >= 0.0), "kl coff is less than zero"
-    response_log_pred = torch.sum(torch.mul(log_probs,action_mask),dim=1)
-    base_log_pred = torch.sum(torch.mul(log_probs_base,action_mask),dim=1)
-    kl = response_log_pred - base_log_pred
-    r = (r - kl_coef * kl).clamp(min=-10, max=10)
-    return r.detach(), kl  
 
 @dataclass
 class Experience:
     sequences: torch.Tensor
     action_log_probs: torch.Tensor
-    returns: torch.Tensor  # rl reward
+    returns: torch.Tensor  
     baselines: torch.Tensor
     attention_mask: Optional[torch.LongTensor]
     action_mask: Optional[torch.BoolTensor]
@@ -103,10 +90,8 @@ class NaiveExperienceMaker(ABC):
         relative_reward_type: str = "",
         reward_coff: float = 0.5,
         baseline_type: str = "",
-        prompts_difficulity: torch.Tensor = None,
         rollout_repeat: int = 1,
         objective_with_kl: bool = False,
-        use_dynamic_kl: str = None,
         **generate_kwargs
     ) -> List[Experience]:
         self.actor.eval()
@@ -137,52 +122,37 @@ class NaiveExperienceMaker(ABC):
                     self.running_moments.update(true_r) 
                     relative_reward = torch.ones_like(true_r,device=true_r.device)*self.running_moments.mean
                     true_r = true_r - reward_coff*relative_reward
-            if prompts_difficulity is not None:
-                if use_dynamic_kl == 'v1':
-                    kl_coff  = 0.01 + 0.03 * prompts_difficulity  # linear increase
-                elif use_dynamic_kl == 'v2':
-                    kl_coff  = 0.01 + 0.03 * prompts_difficulity**2  # quadratic increase
-                else:
-                    raise ValueError("use_dynamic_kl should be v1 or v2")
-                kl_coff = kl_coff.to(true_r.device)
-            else:
-                kl_coff = torch.ones_like(true_r)*self.kl_ctl.value
-            reward, kl = compute_reward(true_r,kl_coff,action_log_probs,  base_action_log_probs,action_mask=action_mask)
-            snapshots.append([sequences, true_r, reward, status, action_log_probs, base_action_log_probs, attention_mask, action_mask])
+            kl_coff = self.kl_ctl.value
+            reward, kl = compute_reward(true_r,kl_coff,action_log_probs,base_action_log_probs,action_mask=action_mask)
+            true_r = reward + kl_coff * kl
+            snapshots.append([sequences, true_r, reward, status, action_log_probs,base_action_log_probs, attention_mask, action_mask])
 
         baselines = []
-        if baseline_type == "rloo":  # RLOO
-            rloo_idx = 1 if objective_with_kl else 2
-            assert rollout_repeat>1, "rollout_repeat should be greater than 1"
-            group_baselines = []
-            prompts_size = len(prompts)
-            for i in range(prompts_size):
-                group_reward = torch.stack([s[rloo_idx][i] for s in snapshots]).unsqueeze(0) 
-                group_reward = group_reward.repeat(rollout_repeat, 1)  
-                mask = torch.ones_like(group_reward).to(group_reward.device)  
-                mask.diagonal().fill_(0)
-                group_baseline = torch.sum(group_reward*mask,dim=1)/(rollout_repeat-1)  
-                group_baselines.append(group_baseline)
-            for i in range(rollout_repeat):
-                baselines.append(torch.stack([group_baselines[j][i] for j in range(prompts_size)]))
- 
+        # TODO baseline
+        
         for i in range(rollout_repeat):
             sequences, true_r, reward, status, action_log_probs, base_action_log_probs, attention_mask, action_mask = snapshots[i]
-            baseline = baselines[i] if baselines else torch.zeros_like(reward)
+            if objective_with_kl:
+                gt = self.get_gt(true_r, action_mask, generate_kwargs["gamma"])
+            else:
+                gt = self.get_gt(reward, action_mask, generate_kwargs["gamma"])
+
+            baseline = baselines[i] if baselines else torch.zeros_like(gt)
             # info: (B,) the info of each sequence
             info = {
-                "kl":kl/action_mask.float().sum(dim=-1),
+                "kl":masked_mean(kl, action_mask, dim=-1),
                 "ppl": masked_mean(-action_log_probs, action_mask, dim=-1),
-                "returns": reward,  # reward has kl penalty
-                "true_reward": true_r,  # true reward
+                "returns": reward.sum(dim=1),  # reward has kl penalty
+                "true_reward": true_r.sum(dim=1),  # true reward
                 "reward_status": status,
                 "response_length": action_mask.float().sum(dim=-1),
                 "total_length": attention_mask.float().sum(dim=-1),
             }
+
             ret.append(Experience(
                 sequences,
                 action_log_probs,
-                true_r if objective_with_kl else reward,  # if objective with kl, rl reward equals to true reward
+                gt,
                 baseline,
                 attention_mask,
                 action_mask,
@@ -192,5 +162,19 @@ class NaiveExperienceMaker(ABC):
         # reset model state
         self.actor.train()
         return ret
+    
+    @torch.no_grad()
+    def get_gt(self, rewards, action_mask, gamma):
+        # return Gt
+        batch_size,response_length = rewards.shape
+        rewards = rewards * action_mask
+        last_gt = torch.zeros(batch_size, device=rewards.device)
+        gt_reversed = []
+        for t in reversed(range(response_length)):
+            gt = rewards[:,t] + gamma * last_gt
+            gt_reversed.append(gt)
+            last_gt = gt
+        gt = torch.stack(gt_reversed[::-1],dim=1)  # (B,T)
+        return gt.detach()
 
     
